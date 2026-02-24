@@ -1,0 +1,45 @@
+package ledger
+
+import (
+	"context"
+
+	"wallet-saas-v2/services/wallet-core/internal/ports"
+)
+
+type MockLedger struct{}
+
+func NewMock() *MockLedger {
+	return &MockLedger{}
+}
+
+func (m *MockLedger) FreezeWithdraw(_ context.Context, _, _, _, _, _ string) error {
+	return nil
+}
+
+func (m *MockLedger) ConfirmWithdraw(_ context.Context, _, _, _, _ string) error {
+	return nil
+}
+
+func (m *MockLedger) ReleaseWithdraw(_ context.Context, _, _, _, _ string) error {
+	return nil
+}
+
+func (m *MockLedger) GetWithdrawStatus(_ context.Context, _, _ string) (ports.LedgerStatus, error) {
+	return ports.LedgerStatus{Status: "MOCK"}, nil
+}
+
+func (m *MockLedger) CreditDeposit(_ context.Context, _ ports.DepositCreditInput) error {
+	return nil
+}
+
+func (m *MockLedger) CollectSweep(_ context.Context, _ ports.SweepCollectInput) error {
+	return nil
+}
+
+func (m *MockLedger) GetBalance(_ context.Context, _, _, _ string) (ports.BalanceSnapshot, error) {
+	return ports.BalanceSnapshot{Available: "0", Frozen: "0"}, nil
+}
+
+func (m *MockLedger) ListAccountAssets(_ context.Context, _, _ string) ([]ports.AccountAsset, error) {
+	return []ports.AccountAsset{}, nil
+}

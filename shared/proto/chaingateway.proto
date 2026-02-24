@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package wallet.chaingateway;
+
+service ChainGatewayService {
+  rpc ConvertAddress(ConvertAddressRequest) returns (ConvertAddressResponse);
+  rpc BuildUnsignedTx(BuildUnsignedTxRequest) returns (BuildUnsignedTxResponse);
+  rpc SendTx(SendTxRequest) returns (SendTxResponse);
+}
+
+message TxVin {
+  string hash = 1;
+  uint32 index = 2;
+  int64 amount = 3;
+  string address = 4;
+}
+
+message TxVout {
+  string address = 1;
+  int64 amount = 2;
+  uint32 index = 3;
+}
+
+message ConvertAddressRequest {
+  string chain = 1;
+  string type = 2;
+  string public_key = 3;
+}
+
+message ConvertAddressResponse {
+  string address = 1;
+}
+
+message BuildUnsignedTxRequest {
+  string chain = 1;
+  string network = 2;
+  string coin = 3;
+  string base64_tx = 4;
+  string fee = 5;
+  repeated TxVin vin = 6;
+  repeated TxVout vout = 7;
+}
+
+message BuildUnsignedTxResponse {
+  string unsigned_tx = 1;
+  repeated string sign_hashes = 2;
+}
+
+message SendTxRequest {
+  string chain = 1;
+  string network = 2;
+  string coin = 3;
+  string raw_tx = 4;
+  string unsigned_tx = 5;
+  repeated string signatures = 6;
+  repeated string public_keys = 7;
+}
+
+message SendTxResponse {
+  string tx_hash = 1;
+}
