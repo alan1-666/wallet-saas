@@ -40,6 +40,41 @@ func (r *PostgresRegistry) Close() error {
 }
 
 func (r *PostgresRegistry) UpsertWatchAddress(ctx context.Context, in ports.WatchAddressInput) error {
+	in.Model = normalizeModel(in.Model)
+	in.Chain = normalizeChain(in.Chain)
+	in.Network = normalizeNetwork(in.Network)
+	in.Coin = normalizeCoin(in.Coin)
+	if in.SignType == "" {
+		in.SignType = "ecdsa"
+	}
+	if in.Model == "" || in.Chain == "" || in.Network == "" || in.Coin == "" {
+		return fmt.Errorf("model/chain/network/coin are required")
+	}
+	meta, err := r.GetChainMetadata(ctx, in.Chain, in.Network)
+	if err != nil {
+		return err
+	}
+	if normalizeModel(meta.Model) != in.Model {
+		return fmt.Errorf("chain model mismatch chain=%s network=%s require=%s actual=%s", in.Chain, in.Network, in.Model, meta.Model)
+	}
+	if !meta.Enabled {
+		return fmt.Errorf("chain disabled chain=%s network=%s", in.Chain, in.Network)
+	}
+	policy, err := r.GetChainPolicy(ctx, in.Chain, in.Network)
+	if err != nil {
+		return err
+	}
+	if !policy.Enabled {
+		return fmt.Errorf("chain policy disabled chain=%s network=%s", in.Chain, in.Network)
+	}
+	in.MinConfirmations = policy.RequiredConfirmations
+	if in.MinConfirmations <= 0 {
+		in.MinConfirmations = 1
+	}
+	if strings.TrimSpace(in.TreasuryAccountID) == "" {
+		in.TreasuryAccountID = "treasury-main"
+	}
+
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -175,6 +210,75 @@ ORDER BY id DESC
 	return out, rows.Err()
 }
 
+func (r *PostgresRegistry) GetChainMetadata(ctx context.Context, chain, network string) (ports.ChainMetadata, error) {
+	chain = normalizeChain(chain)
+	network = normalizeNetwork(network)
+	if chain == "" || network == "" {
+		return ports.ChainMetadata{}, fmt.Errorf("chain and network are required")
+	}
+	var out ports.ChainMetadata
+	err := r.db.QueryRowContext(ctx, `
+SELECT chain, network, model, native_asset, min_confirmations, enabled
+FROM chain_metadata
+WHERE chain=$1
+  AND network IN ($2, '*')
+ORDER BY CASE WHEN network=$2 THEN 0 ELSE 1 END
+LIMIT 1
+`, chain, network).Scan(&out.Chain, &out.Network, &out.Model, &out.NativeAsset, &out.MinConfirmations, &out.Enabled)
+	if err == sql.ErrNoRows {
+		return ports.ChainMetadata{}, fmt.Errorf("unsupported chain/network chain=%s network=%s", chain, network)
+	}
+	if err != nil {
+		return ports.ChainMetadata{}, err
+	}
+	return out, nil
+}
+
+func (r *PostgresRegistry) GetChainPolicy(ctx context.Context, chain, network string) (ports.ChainPolicy, error) {
+	chain = normalizeChain(chain)
+	network = normalizeNetwork(network)
+	if chain == "" || network == "" {
+		return ports.ChainPolicy{}, fmt.Errorf("chain and network are required")
+	}
+	var out ports.ChainPolicy
+	err := r.db.QueryRowContext(ctx, `
+SELECT chain, network, required_confirmations, safe_depth, reorg_window, fee_policy, enabled
+FROM chain_policies
+WHERE chain=$1
+  AND network IN ($2, '*')
+ORDER BY CASE WHEN network=$2 THEN 0 ELSE 1 END
+LIMIT 1
+`, chain, network).Scan(&out.Chain, &out.Network, &out.RequiredConfirmations, &out.SafeDepth, &out.ReorgWindow, &out.FeePolicy, &out.Enabled)
+	if err == sql.ErrNoRows {
+		meta, metaErr := r.GetChainMetadata(ctx, chain, network)
+		if metaErr != nil {
+			return ports.ChainPolicy{}, metaErr
+		}
+		return ports.ChainPolicy{
+			Chain:                 meta.Chain,
+			Network:               meta.Network,
+			RequiredConfirmations: maxInt64(meta.MinConfirmations, 1),
+			SafeDepth:             maxInt64(meta.MinConfirmations, 1),
+			ReorgWindow:           maxInt64(meta.MinConfirmations*3, 6),
+			FeePolicy:             "{}",
+			Enabled:               meta.Enabled,
+		}, nil
+	}
+	if err != nil {
+		return ports.ChainPolicy{}, err
+	}
+	if out.RequiredConfirmations <= 0 {
+		out.RequiredConfirmations = 1
+	}
+	if out.SafeDepth <= 0 {
+		out.SafeDepth = out.RequiredConfirmations
+	}
+	if out.ReorgWindow <= 0 {
+		out.ReorgWindow = maxInt64(out.RequiredConfirmations*3, 6)
+	}
+	return out, nil
+}
+
 func (r *PostgresRegistry) upsertAccountTx(ctx context.Context, tx *sql.Tx, tenantID, accountID, status, remark string) error {
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO wallet_accounts (tenant_id, account_id, status, remark)
@@ -204,7 +308,7 @@ account_id TEXT NOT NULL,
 model TEXT NOT NULL DEFAULT 'account',
 chain TEXT NOT NULL,
 coin TEXT NOT NULL,
-network TEXT NOT NULL DEFAULT 'mainnet',
+network TEXT NOT NULL,
 address TEXT NOT NULL,
 public_key TEXT NOT NULL,
 sign_type TEXT NOT NULL DEFAULT 'ecdsa',
@@ -220,7 +324,7 @@ account_id TEXT NOT NULL,
 model TEXT NOT NULL DEFAULT 'account',
 chain TEXT NOT NULL,
 coin TEXT NOT NULL,
-network TEXT NOT NULL DEFAULT 'mainnet',
+network TEXT NOT NULL,
 address TEXT NOT NULL,
 min_confirmations BIGINT NOT NULL DEFAULT 1,
 treasury_account_id TEXT NOT NULL DEFAULT 'treasury-main',
@@ -230,21 +334,63 @@ active BOOLEAN NOT NULL DEFAULT TRUE,
 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );`,
+		`CREATE TABLE IF NOT EXISTS chain_metadata (
+id BIGSERIAL PRIMARY KEY,
+chain TEXT NOT NULL,
+network TEXT NOT NULL,
+model TEXT NOT NULL,
+native_asset TEXT NOT NULL DEFAULT '',
+min_confirmations BIGINT NOT NULL DEFAULT 1,
+enabled BOOLEAN NOT NULL DEFAULT TRUE,
+created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+UNIQUE (chain, network)
+);`,
+		`CREATE TABLE IF NOT EXISTS chain_policies (
+id BIGSERIAL PRIMARY KEY,
+chain TEXT NOT NULL,
+network TEXT NOT NULL,
+required_confirmations BIGINT NOT NULL DEFAULT 1,
+safe_depth BIGINT NOT NULL DEFAULT 1,
+reorg_window BIGINT NOT NULL DEFAULT 6,
+fee_policy TEXT NOT NULL DEFAULT '{}',
+enabled BOOLEAN NOT NULL DEFAULT TRUE,
+created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+UNIQUE (chain, network)
+);`,
 	}
 	for _, stmt := range stmts {
 		if _, err := r.db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("registry schema init failed: %w", err)
 		}
 	}
-	_, err := r.db.ExecContext(ctx, `
+	if _, err := r.db.ExecContext(ctx, `
 CREATE UNIQUE INDEX IF NOT EXISTS uq_scan_watch_addr_tenant
 ON scan_watch_addresses (model, chain, coin, network, address, tenant_id, account_id)
-`)
-	if err != nil {
+`); err != nil {
 		return fmt.Errorf("registry schema index failed: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `
+CREATE UNIQUE INDEX IF NOT EXISTS uq_chain_metadata_chain_network
+ON chain_metadata (chain, network)
+`); err != nil {
+		return fmt.Errorf("registry chain_metadata index failed: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `
+CREATE UNIQUE INDEX IF NOT EXISTS uq_chain_policies_chain_network
+ON chain_policies (chain, network)
+`); err != nil {
+		return fmt.Errorf("registry chain_policies index failed: %w", err)
 	}
 	if _, err := r.db.ExecContext(ctx, `ALTER TABLE scan_watch_addresses ALTER COLUMN auto_sweep SET DEFAULT FALSE`); err != nil {
 		return fmt.Errorf("registry schema alter default failed: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `ALTER TABLE wallet_addresses ALTER COLUMN network DROP DEFAULT`); err != nil {
+		return fmt.Errorf("registry schema drop wallet_addresses network default failed: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `ALTER TABLE scan_watch_addresses ALTER COLUMN network DROP DEFAULT`); err != nil {
+		return fmt.Errorf("registry schema drop scan_watch_addresses network default failed: %w", err)
 	}
 	if _, err := r.db.ExecContext(ctx, `
 ALTER TABLE wallet_accounts ADD COLUMN IF NOT EXISTS account_tag TEXT NOT NULL DEFAULT ''
@@ -272,5 +418,162 @@ ON CONFLICT (tenant_id, account_id) DO NOTHING
 `); err != nil {
 		return fmt.Errorf("registry backfill accounts from scan_watch_addresses failed: %w", err)
 	}
+	if err := r.seedChainMetadata(ctx); err != nil {
+		return err
+	}
+	if err := r.seedChainPolicies(ctx); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (r *PostgresRegistry) seedChainMetadata(ctx context.Context) error {
+	stmts := []string{
+		`INSERT INTO chain_metadata (chain, network, model, native_asset, min_confirmations, enabled) VALUES
+('ethereum','mainnet','account','ETH',12,TRUE),
+('ethereum','sepolia','account','ETH',1,TRUE),
+('binance','mainnet','account','BNB',12,TRUE),
+('polygon','mainnet','account','MATIC',64,TRUE),
+('arbitrum','mainnet','account','ETH',12,TRUE),
+('optimism','mainnet','account','ETH',12,TRUE),
+('linea','mainnet','account','ETH',12,TRUE),
+('scroll','mainnet','account','ETH',12,TRUE),
+('mantle','mainnet','account','MNT',12,TRUE),
+('zksync','mainnet','account','ETH',12,TRUE),
+('tron','mainnet','account','TRX',20,TRUE),
+('solana','mainnet','account','SOL',32,TRUE),
+('bitcoin','mainnet','utxo','BTC',1,TRUE),
+('bitcoin','testnet','utxo','BTC',1,TRUE),
+('bitcoincash','mainnet','utxo','BCH',1,TRUE),
+('dash','mainnet','utxo','DASH',1,TRUE),
+('dogecoin','mainnet','utxo','DOGE',6,TRUE),
+('litecoin','mainnet','utxo','LTC',6,TRUE),
+('zen','mainnet','utxo','ZEN',6,TRUE)
+ON CONFLICT (chain, network) DO NOTHING;`,
+		`INSERT INTO chain_metadata (chain, network, model, native_asset, min_confirmations, enabled) VALUES
+('ethereum','*','account','ETH',12,TRUE),
+('binance','*','account','BNB',12,TRUE),
+('polygon','*','account','MATIC',64,TRUE),
+('arbitrum','*','account','ETH',12,TRUE),
+('optimism','*','account','ETH',12,TRUE),
+('linea','*','account','ETH',12,TRUE),
+('scroll','*','account','ETH',12,TRUE),
+('mantle','*','account','MNT',12,TRUE),
+('zksync','*','account','ETH',12,TRUE),
+('tron','*','account','TRX',20,TRUE),
+('solana','*','account','SOL',32,TRUE),
+('bitcoin','*','utxo','BTC',1,TRUE),
+('bitcoincash','*','utxo','BCH',1,TRUE),
+('dash','*','utxo','DASH',1,TRUE),
+('dogecoin','*','utxo','DOGE',6,TRUE),
+('litecoin','*','utxo','LTC',6,TRUE),
+('zen','*','utxo','ZEN',6,TRUE)
+ON CONFLICT (chain, network) DO NOTHING;`,
+	}
+	for _, stmt := range stmts {
+		if _, err := r.db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("seed chain_metadata failed: %w", err)
+		}
+	}
+	return nil
+}
+
+func (r *PostgresRegistry) seedChainPolicies(ctx context.Context) error {
+	stmts := []string{
+		`INSERT INTO chain_policies (chain, network, required_confirmations, safe_depth, reorg_window, fee_policy, enabled) VALUES
+('ethereum','mainnet',12,12,64,'{}',TRUE),
+('ethereum','sepolia',1,1,12,'{}',TRUE),
+('binance','mainnet',12,12,64,'{}',TRUE),
+('polygon','mainnet',64,64,256,'{}',TRUE),
+('arbitrum','mainnet',12,12,64,'{}',TRUE),
+('optimism','mainnet',12,12,64,'{}',TRUE),
+('linea','mainnet',12,12,64,'{}',TRUE),
+('scroll','mainnet',12,12,64,'{}',TRUE),
+('mantle','mainnet',12,12,64,'{}',TRUE),
+('zksync','mainnet',12,12,64,'{}',TRUE),
+('tron','mainnet',20,20,120,'{}',TRUE),
+('solana','mainnet',32,32,160,'{}',TRUE),
+('bitcoin','mainnet',1,1,12,'{}',TRUE),
+('bitcoin','testnet',1,1,12,'{}',TRUE),
+('bitcoincash','mainnet',1,1,12,'{}',TRUE),
+('dash','mainnet',1,1,12,'{}',TRUE),
+('dogecoin','mainnet',6,6,24,'{}',TRUE),
+('litecoin','mainnet',6,6,24,'{}',TRUE),
+('zen','mainnet',6,6,24,'{}',TRUE)
+ON CONFLICT (chain, network) DO NOTHING;`,
+		`INSERT INTO chain_policies (chain, network, required_confirmations, safe_depth, reorg_window, fee_policy, enabled) VALUES
+('ethereum','*',12,12,64,'{}',TRUE),
+('binance','*',12,12,64,'{}',TRUE),
+('polygon','*',64,64,256,'{}',TRUE),
+('arbitrum','*',12,12,64,'{}',TRUE),
+('optimism','*',12,12,64,'{}',TRUE),
+('linea','*',12,12,64,'{}',TRUE),
+('scroll','*',12,12,64,'{}',TRUE),
+('mantle','*',12,12,64,'{}',TRUE),
+('zksync','*',12,12,64,'{}',TRUE),
+('tron','*',20,20,120,'{}',TRUE),
+('solana','*',32,32,160,'{}',TRUE),
+('bitcoin','*',1,1,12,'{}',TRUE),
+('bitcoincash','*',1,1,12,'{}',TRUE),
+('dash','*',1,1,12,'{}',TRUE),
+('dogecoin','*',6,6,24,'{}',TRUE),
+('litecoin','*',6,6,24,'{}',TRUE),
+('zen','*',6,6,24,'{}',TRUE)
+ON CONFLICT (chain, network) DO NOTHING;`,
+	}
+	for _, stmt := range stmts {
+		if _, err := r.db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("seed chain_policies failed: %w", err)
+		}
+	}
+	return nil
+}
+
+func normalizeChain(v string) string {
+	x := strings.ToLower(strings.TrimSpace(v))
+	switch x {
+	case "eth":
+		return "ethereum"
+	case "bsc":
+		return "binance"
+	case "trx":
+		return "tron"
+	case "sol":
+		return "solana"
+	case "btc":
+		return "bitcoin"
+	case "bch":
+		return "bitcoincash"
+	case "ltc":
+		return "litecoin"
+	case "doge":
+		return "dogecoin"
+	default:
+		return x
+	}
+}
+
+func normalizeNetwork(v string) string {
+	return strings.ToLower(strings.TrimSpace(v))
+}
+
+func normalizeModel(v string) string {
+	x := strings.ToLower(strings.TrimSpace(v))
+	switch x {
+	case "account", "utxo":
+		return x
+	default:
+		return ""
+	}
+}
+
+func normalizeCoin(v string) string {
+	return strings.ToUpper(strings.TrimSpace(v))
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }

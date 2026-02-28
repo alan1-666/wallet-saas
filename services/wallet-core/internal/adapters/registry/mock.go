@@ -50,3 +50,43 @@ func (m *MockRegistry) ListAccountAddresses(_ context.Context, tenantID, account
 	}
 	return []ports.WalletAddress{}, nil
 }
+
+func (m *MockRegistry) GetChainMetadata(_ context.Context, chain, network string) (ports.ChainMetadata, error) {
+	if chain == "" {
+		return ports.ChainMetadata{}, fmt.Errorf("chain is required")
+	}
+	if network == "" {
+		return ports.ChainMetadata{}, fmt.Errorf("network is required")
+	}
+	model := "account"
+	switch chain {
+	case "bitcoin", "btc", "litecoin", "ltc", "dogecoin", "doge", "dash", "bitcoincash", "bch", "zen":
+		model = "utxo"
+	}
+	return ports.ChainMetadata{
+		Chain:            chain,
+		Network:          network,
+		Model:            model,
+		NativeAsset:      "",
+		MinConfirmations: 1,
+		Enabled:          true,
+	}, nil
+}
+
+func (m *MockRegistry) GetChainPolicy(_ context.Context, chain, network string) (ports.ChainPolicy, error) {
+	if chain == "" {
+		return ports.ChainPolicy{}, fmt.Errorf("chain is required")
+	}
+	if network == "" {
+		return ports.ChainPolicy{}, fmt.Errorf("network is required")
+	}
+	return ports.ChainPolicy{
+		Chain:                 chain,
+		Network:               network,
+		RequiredConfirmations: 1,
+		SafeDepth:             1,
+		ReorgWindow:           6,
+		FeePolicy:             "{}",
+		Enabled:               true,
+	}, nil
+}

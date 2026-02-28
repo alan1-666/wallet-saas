@@ -21,6 +21,7 @@ type DepositNotifyRequest struct {
 	AccountID     string `json:"account_id"`
 	OrderID       string `json:"order_id"`
 	Chain         string `json:"chain"`
+	Network       string `json:"network"`
 	Coin          string `json:"coin"`
 	Amount        string `json:"amount"`
 	TxHash        string `json:"tx_hash"`
@@ -36,16 +37,41 @@ type SweepRunRequest struct {
 	SweepOrderID      string `json:"sweep_order_id"`
 	FromAccountID     string `json:"from_account_id"`
 	TreasuryAccountID string `json:"treasury_account_id"`
+	Chain             string `json:"chain"`
+	Network           string `json:"network"`
 	Asset             string `json:"asset"`
 	Amount            string `json:"amount"`
 }
 
-func NewWalletCore(baseURL, token string) *WalletCore {
+type WithdrawOnchainNotifyRequest struct {
+	TenantID      string `json:"tenant_id"`
+	OrderID       string `json:"order_id"`
+	TxHash        string `json:"tx_hash"`
+	Status        string `json:"status"`
+	Reason        string `json:"reason"`
+	Confirmations int64  `json:"confirmations"`
+	RequiredConfs int64  `json:"required_confirmations"`
+}
+
+type SweepOnchainNotifyRequest struct {
+	TenantID      string `json:"tenant_id"`
+	SweepOrderID  string `json:"sweep_order_id"`
+	TxHash        string `json:"tx_hash"`
+	Status        string `json:"status"`
+	Reason        string `json:"reason"`
+	Confirmations int64  `json:"confirmations"`
+	RequiredConfs int64  `json:"required_confirmations"`
+}
+
+func NewWalletCore(baseURL, token string, timeout time.Duration) *WalletCore {
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
 	return &WalletCore{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		token:   token,
 		http: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: timeout,
 		},
 	}
 }
@@ -56,6 +82,14 @@ func (w *WalletCore) DepositNotify(ctx context.Context, requestID string, req De
 
 func (w *WalletCore) SweepRun(ctx context.Context, requestID string, req SweepRunRequest) error {
 	return w.postJSON(ctx, "/v1/sweep/run", requestID, req)
+}
+
+func (w *WalletCore) WithdrawOnchainNotify(ctx context.Context, requestID string, req WithdrawOnchainNotifyRequest) error {
+	return w.postJSON(ctx, "/v1/withdraw/onchain/notify", requestID, req)
+}
+
+func (w *WalletCore) SweepOnchainNotify(ctx context.Context, requestID string, req SweepOnchainNotifyRequest) error {
+	return w.postJSON(ctx, "/v1/sweep/onchain/notify", requestID, req)
 }
 
 func (w *WalletCore) postJSON(ctx context.Context, path, requestID string, body any) error {

@@ -40,7 +40,7 @@ func (l *PostgresLedger) Close() error {
 	return l.db.Close()
 }
 
-func (l *PostgresLedger) FreezeWithdraw(ctx context.Context, tenantID, accountID, orderID, asset, amount string) error {
+func (l *PostgresLedger) FreezeWithdraw(ctx context.Context, tenantID, accountID, orderID, chain, network, asset, amount string, requiredConfs int64) error {
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -49,8 +49,11 @@ func (l *PostgresLedger) FreezeWithdraw(ctx context.Context, tenantID, accountID
 		_ = tx.Rollback()
 	}()
 
-	if asset == "" {
-		return fmt.Errorf("asset is required")
+	if asset == "" || chain == "" || network == "" {
+		return fmt.Errorf("chain/network/asset are required")
+	}
+	if requiredConfs <= 0 {
+		requiredConfs = 1
 	}
 	var existingStatus string
 	err = tx.QueryRowContext(ctx, `
@@ -59,7 +62,7 @@ WHERE tenant_id=$1 AND order_id=$2
 FOR UPDATE
 `, tenantID, orderID).Scan(&existingStatus)
 	if err == nil {
-		if existingStatus == "FROZEN" || existingStatus == "CONFIRMED" {
+		if existingStatus == "FROZEN" || existingStatus == "BROADCASTED" || existingStatus == "CONFIRMED" {
 			return tx.Commit()
 		}
 		return fmt.Errorf("withdraw order already exists with status=%s", existingStatus)
@@ -85,10 +88,10 @@ FOR UPDATE
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO ledger_freezes (tenant_id, account_id, order_id, asset, amount, status)
-VALUES ($1,$2,$3,$4,$5,'FROZEN')
-ON CONFLICT (tenant_id, order_id) DO NOTHING
-`, tenantID, accountID, orderID, asset, amount); err != nil {
+	INSERT INTO ledger_freezes (tenant_id, account_id, order_id, chain, network, asset, amount, status, required_confirmations, confirmations)
+	VALUES ($1,$2,$3,$4,$5,$6,$7,'FROZEN',$8,0)
+	ON CONFLICT (tenant_id, order_id) DO NOTHING
+	`, tenantID, accountID, orderID, chain, network, asset, amount, requiredConfs); err != nil {
 		return err
 	}
 
@@ -134,7 +137,7 @@ FOR UPDATE
 	if err != nil {
 		return err
 	}
-	if status == "CONFIRMED" {
+	if status == "BROADCASTED" || status == "CONFIRMED" {
 		return tx.Commit()
 	}
 	if status != "FROZEN" {
@@ -143,26 +146,71 @@ FOR UPDATE
 
 	if _, err := tx.ExecContext(ctx, `
 UPDATE ledger_freezes
-SET status='CONFIRMED', tx_hash=$1, updated_at=NOW()
+SET status='BROADCASTED', tx_hash=$1, updated_at=NOW()
 WHERE tenant_id=$2 AND order_id=$3
 `, txHash, tenantID, orderID); err != nil {
 		return err
 	}
+	return tx.Commit()
+}
 
-	if _, err := tx.ExecContext(ctx, `
-UPDATE ledger_entries
-SET status='DONE', updated_at=NOW()
-WHERE tenant_id=$1 AND order_id=$2 AND entry_type='WITHDRAW_FREEZE'
-`, tenantID, orderID); err != nil {
+func (l *PostgresLedger) ConfirmWithdrawOnChain(ctx context.Context, tenantID, orderID, txHash string, confirmations, requiredConfs int64) error {
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
+	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO ledger_entries (tenant_id, account_id, order_id, asset, entry_type, amount, status)
-VALUES ($1,$2,$3,$4,'WITHDRAW_CONFIRM',$5,'DONE')
-ON CONFLICT (tenant_id, order_id, entry_type) DO NOTHING
-`, tenantID, accountID, orderID, asset, amount); err != nil {
+	var (
+		accountID string
+		asset     string
+		amount    string
+		status    string
+		oldConfs  int64
+		reqConfs  int64
+	)
+	err = tx.QueryRowContext(ctx, `
+SELECT account_id, asset, amount, status, confirmations, required_confirmations
+FROM ledger_freezes
+WHERE tenant_id=$1 AND order_id=$2
+FOR UPDATE
+`, tenantID, orderID).Scan(&accountID, &asset, &amount, &status, &oldConfs, &reqConfs)
+	if err != nil {
 		return err
+	}
+	if requiredConfs <= 0 {
+		requiredConfs = reqConfs
+	}
+	if requiredConfs <= 0 {
+		requiredConfs = 1
+	}
+	if confirmations < oldConfs {
+		confirmations = oldConfs
+	}
+	if status == "CONFIRMED" {
+		_, err := tx.ExecContext(ctx, `
+UPDATE ledger_freezes
+SET confirmations=GREATEST(confirmations,$1), required_confirmations=$2, updated_at=NOW()
+WHERE tenant_id=$3 AND order_id=$4
+`, confirmations, requiredConfs, tenantID, orderID)
+		if err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	if status != "BROADCASTED" && status != "FROZEN" {
+		return fmt.Errorf("withdraw status invalid for onchain confirm: %s", status)
+	}
+	if confirmations < requiredConfs {
+		_, err := tx.ExecContext(ctx, `
+UPDATE ledger_freezes
+SET status='BROADCASTED', tx_hash=$1, confirmations=GREATEST(confirmations,$2), required_confirmations=$3, updated_at=NOW()
+WHERE tenant_id=$4 AND order_id=$5
+`, txHash, confirmations, requiredConfs, tenantID, orderID)
+		if err != nil {
+			return err
+		}
+		return tx.Commit()
 	}
 
 	current, err := l.getBalanceTx(ctx, tx, tenantID, accountID, asset)
@@ -176,7 +224,27 @@ ON CONFLICT (tenant_id, order_id, entry_type) DO NOTHING
 	if err := l.upsertBalanceTx(ctx, tx, tenantID, accountID, asset, current.Available, frozen); err != nil {
 		return err
 	}
-
+	if _, err := tx.ExecContext(ctx, `
+UPDATE ledger_freezes
+SET status='CONFIRMED', tx_hash=$1, confirmations=GREATEST(confirmations,$2), required_confirmations=$3, updated_at=NOW()
+WHERE tenant_id=$4 AND order_id=$5
+`, txHash, confirmations, requiredConfs, tenantID, orderID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE ledger_entries
+SET status='DONE', updated_at=NOW()
+WHERE tenant_id=$1 AND order_id=$2 AND entry_type='WITHDRAW_FREEZE'
+`, tenantID, orderID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO ledger_entries (tenant_id, account_id, order_id, asset, entry_type, amount, status)
+VALUES ($1,$2,$3,$4,'WITHDRAW_CONFIRM',$5,'DONE')
+ON CONFLICT (tenant_id, order_id, entry_type) DO NOTHING
+`, tenantID, accountID, orderID, asset, amount); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO ledger_journals (tenant_id, biz_type, biz_id, account_id, asset, entry_side, amount, balance_after)
 VALUES ($1,'WITHDRAW',$2,$3,$4,'DEBIT',$5,$6)
@@ -184,7 +252,79 @@ ON CONFLICT (tenant_id, biz_type, biz_id, account_id, entry_side) DO NOTHING
 `, tenantID, orderID, accountID, asset, amount, current.Available); err != nil {
 		return err
 	}
+	return tx.Commit()
+}
 
+func (l *PostgresLedger) FailWithdrawOnChain(ctx context.Context, tenantID, orderID, reason string, confirmations int64) error {
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var (
+		accountID string
+		asset     string
+		amount    string
+		status    string
+	)
+	err = tx.QueryRowContext(ctx, `
+SELECT account_id, asset, amount, status
+FROM ledger_freezes
+WHERE tenant_id=$1 AND order_id=$2
+FOR UPDATE
+`, tenantID, orderID).Scan(&accountID, &asset, &amount, &status)
+	if err != nil {
+		return err
+	}
+	if status == "RELEASED" {
+		return tx.Commit()
+	}
+	if status == "CONFIRMED" {
+		return fmt.Errorf("withdraw already confirmed")
+	}
+	current, err := l.getBalanceTx(ctx, tx, tenantID, accountID, asset)
+	if err != nil {
+		return err
+	}
+	avail, err := addDecimalString(current.Available, amount)
+	if err != nil {
+		return err
+	}
+	frozen, err := subDecimalString(current.Frozen, amount)
+	if err != nil {
+		return err
+	}
+	if err := l.upsertBalanceTx(ctx, tx, tenantID, accountID, asset, avail, frozen); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE ledger_freezes
+SET status='RELEASED', reason=$1, confirmations=GREATEST(confirmations,$2), updated_at=NOW()
+WHERE tenant_id=$3 AND order_id=$4
+`, reason, confirmations, tenantID, orderID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE ledger_entries
+SET status='CANCELLED', updated_at=NOW()
+WHERE tenant_id=$1 AND order_id=$2 AND entry_type='WITHDRAW_FREEZE'
+`, tenantID, orderID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO ledger_entries (tenant_id, account_id, order_id, asset, entry_type, amount, status)
+VALUES ($1,$2,$3,$4,'WITHDRAW_RELEASE',$5,'DONE')
+ON CONFLICT (tenant_id, order_id, entry_type) DO NOTHING
+`, tenantID, accountID, orderID, asset, amount); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO ledger_journals (tenant_id, biz_type, biz_id, account_id, asset, entry_side, amount, balance_after)
+VALUES ($1,'WITHDRAW',$2,$3,$4,'UNFREEZE',$5,$6)
+ON CONFLICT (tenant_id, biz_type, biz_id, account_id, entry_side) DO NOTHING
+`, tenantID, orderID, accountID, asset, amount, avail); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -214,7 +354,7 @@ FOR UPDATE
 	if status == "RELEASED" {
 		return tx.Commit()
 	}
-	if status != "FROZEN" {
+	if status != "FROZEN" && status != "BROADCASTED" {
 		return fmt.Errorf("withdraw status invalid for release: %s", status)
 	}
 
@@ -293,7 +433,7 @@ func (l *PostgresLedger) CreditDeposit(ctx context.Context, in ports.DepositCred
 	if requiredConfs <= 0 {
 		requiredConfs = 1
 	}
-	targetStatus := strings.ToUpper(strings.TrimSpace(in.Status))
+	targetStatus := normalizeDepositStatus(strings.TrimSpace(in.Status))
 	switch targetStatus {
 	case "REVERTED":
 	case "PENDING":
@@ -318,9 +458,9 @@ FOR UPDATE
 `, in.TenantID, in.OrderID).Scan(&oldStatus, &oldCredit)
 	if err == sql.ErrNoRows {
 		_, err = tx.ExecContext(ctx, `
-INSERT INTO deposit_events (tenant_id, account_id, order_id, chain, coin, amount, tx_hash, from_address, to_address, confirmations, required_confirmations, status, credited)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,FALSE)
-`, in.TenantID, in.AccountID, in.OrderID, in.Chain, in.Coin, in.Amount, in.TxHash, in.FromAddress, in.ToAddress, in.Confirmations, requiredConfs, targetStatus)
+INSERT INTO deposit_events (tenant_id, account_id, order_id, chain, network, coin, amount, tx_hash, from_address, to_address, confirmations, required_confirmations, status, credited)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,FALSE)
+`, in.TenantID, in.AccountID, in.OrderID, in.Chain, in.Network, in.Coin, in.Amount, in.TxHash, in.FromAddress, in.ToAddress, in.Confirmations, requiredConfs, targetStatus)
 		if err != nil {
 			return err
 		}
@@ -330,8 +470,21 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,FALSE)
 		return err
 	}
 
+	effectiveStatus := targetStatus
+	switch normalizeDepositStatus(oldStatus) {
+	case "REVERTED":
+		effectiveStatus = "REVERTED"
+	case "CONFIRMED":
+		if targetStatus == "PENDING" {
+			effectiveStatus = "CONFIRMED"
+		}
+	}
+	if targetStatus == "REVERTED" {
+		effectiveStatus = "REVERTED"
+	}
+
 	newCredited := oldCredit
-	if !oldCredit && targetStatus == "CONFIRMED" {
+	if !oldCredit && effectiveStatus == "CONFIRMED" {
 		bal, err := l.getBalanceTx(ctx, tx, in.TenantID, in.AccountID, in.Coin)
 		if err != nil {
 			return err
@@ -353,7 +506,7 @@ ON CONFLICT (tenant_id, biz_type, biz_id, account_id, entry_side) DO NOTHING
 		newCredited = true
 	}
 
-	if oldCredit && targetStatus == "REVERTED" {
+	if oldCredit && effectiveStatus == "REVERTED" {
 		bal, err := l.getBalanceTx(ctx, tx, in.TenantID, in.AccountID, in.Coin)
 		if err != nil {
 			return err
@@ -373,67 +526,162 @@ ON CONFLICT (tenant_id, biz_type, biz_id, account_id, entry_side) DO NOTHING
 			return err
 		}
 		newCredited = false
+		_ = l.markReorgRiskTx(ctx, tx, in)
 	}
 
 	_, err = tx.ExecContext(ctx, `
 UPDATE deposit_events
 SET account_id=$1,
     chain=$2,
-    coin=$3,
-    amount=$4,
-    tx_hash=$5,
-    from_address=$6,
-    to_address=$7,
-    confirmations=GREATEST(confirmations,$8),
-    required_confirmations=$9,
-    status=$10,
-    credited=$11,
+    network=$3,
+    coin=$4,
+    amount=$5,
+    tx_hash=$6,
+    from_address=$7,
+    to_address=$8,
+    confirmations=GREATEST(confirmations,$9),
+    required_confirmations=$10,
+    status=$11,
+    credited=$12,
     updated_at=NOW()
-WHERE tenant_id=$12 AND order_id=$13
-`, in.AccountID, in.Chain, in.Coin, in.Amount, in.TxHash, in.FromAddress, in.ToAddress, in.Confirmations, requiredConfs, targetStatus, newCredited, in.TenantID, in.OrderID)
+WHERE tenant_id=$13 AND order_id=$14
+`, in.AccountID, in.Chain, in.Network, in.Coin, in.Amount, in.TxHash, in.FromAddress, in.ToAddress, in.Confirmations, requiredConfs, effectiveStatus, newCredited, in.TenantID, in.OrderID)
 	if err != nil {
 		return err
 	}
-	_ = oldStatus // preserve for future metrics hooks
 	return tx.Commit()
 }
 
-func (l *PostgresLedger) CollectSweep(ctx context.Context, in ports.SweepCollectInput) error {
+func (l *PostgresLedger) markReorgRiskTx(ctx context.Context, tx *sql.Tx, in ports.DepositCreditInput) error {
+	_, err := tx.ExecContext(ctx, `
+INSERT INTO risk_events (tenant_id, account_id, order_id, chain, coin, amount, rule_limit, decision)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+ON CONFLICT (tenant_id, order_id)
+DO UPDATE SET
+  account_id=EXCLUDED.account_id,
+  chain=EXCLUDED.chain,
+  coin=EXCLUDED.coin,
+  amount=EXCLUDED.amount,
+  rule_limit=EXCLUDED.rule_limit,
+  decision=EXCLUDED.decision
+`, in.TenantID, in.AccountID, in.OrderID, in.Chain, in.Coin, in.Amount, "REORG", "REORG_REVERTED")
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "risk_events") {
+		return nil
+	}
+	return err
+}
+
+func (l *PostgresLedger) StartSweep(ctx context.Context, in ports.SweepCollectInput) error {
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	treasuryBal, err := l.getVaultBalanceTx(ctx, tx, in.TenantID, in.TreasuryAccountID, in.Asset)
-	if err != nil {
-		return err
+	requiredConfs := in.RequiredConfs
+	if requiredConfs <= 0 {
+		requiredConfs = 1
 	}
-	treasuryAvail, err := addDecimalString(treasuryBal.Available, in.Amount)
-	if err != nil {
-		return err
-	}
-	if err := l.upsertVaultBalanceTx(ctx, tx, in.TenantID, in.TreasuryAccountID, in.Asset, treasuryAvail); err != nil {
-		return err
-	}
-
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO sweep_orders (tenant_id, sweep_order_id, from_account_id, treasury_account_id, asset, amount, status)
-VALUES ($1,$2,$3,$4,$5,$6,'DONE')
-ON CONFLICT (tenant_id, sweep_order_id) DO NOTHING
-`, in.TenantID, in.SweepOrderID, in.FromAccountID, in.TreasuryAccountID, in.Asset, in.Amount); err != nil {
+INSERT INTO sweep_orders (tenant_id, sweep_order_id, from_account_id, treasury_account_id, chain, network, asset, amount, tx_hash, confirmations, required_confirmations, status)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,$10,'BROADCASTED')
+ON CONFLICT (tenant_id, sweep_order_id)
+DO UPDATE SET tx_hash=EXCLUDED.tx_hash, chain=EXCLUDED.chain, network=EXCLUDED.network, required_confirmations=EXCLUDED.required_confirmations, status='BROADCASTED', updated_at=NOW()
+`, in.TenantID, in.SweepOrderID, in.FromAccountID, in.TreasuryAccountID, in.Chain, in.Network, in.Asset, in.Amount, in.TxHash, requiredConfs); err != nil {
 		return err
 	}
+	return tx.Commit()
+}
 
+func (l *PostgresLedger) ConfirmSweepOnChain(ctx context.Context, in ports.SweepConfirmInput) error {
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var (
+		treasuryAccountID string
+		asset             string
+		amount            string
+		status            string
+		oldConfirms       int64
+		reqConfs          int64
+	)
+	err = tx.QueryRowContext(ctx, `
+SELECT treasury_account_id, asset, amount, status, confirmations, required_confirmations
+FROM sweep_orders
+WHERE tenant_id=$1 AND sweep_order_id=$2
+FOR UPDATE
+`, in.TenantID, in.SweepOrderID).Scan(&treasuryAccountID, &asset, &amount, &status, &oldConfirms, &reqConfs)
+	if err != nil {
+		return err
+	}
+	if in.RequiredConfs <= 0 {
+		in.RequiredConfs = reqConfs
+	}
+	if in.RequiredConfs <= 0 {
+		in.RequiredConfs = 1
+	}
+	if in.Confirmations < oldConfirms {
+		in.Confirmations = oldConfirms
+	}
+	if status == "DONE" {
+		_, err := tx.ExecContext(ctx, `
+UPDATE sweep_orders
+SET confirmations=GREATEST(confirmations,$1), required_confirmations=$2, updated_at=NOW()
+WHERE tenant_id=$3 AND sweep_order_id=$4
+`, in.Confirmations, in.RequiredConfs, in.TenantID, in.SweepOrderID)
+		if err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	if in.Confirmations < in.RequiredConfs {
+		_, err := tx.ExecContext(ctx, `
+UPDATE sweep_orders
+SET status='BROADCASTED', tx_hash=$1, confirmations=GREATEST(confirmations,$2), required_confirmations=$3, updated_at=NOW()
+WHERE tenant_id=$4 AND sweep_order_id=$5
+`, in.TxHash, in.Confirmations, in.RequiredConfs, in.TenantID, in.SweepOrderID)
+		if err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	treasuryBal, err := l.getVaultBalanceTx(ctx, tx, in.TenantID, treasuryAccountID, asset)
+	if err != nil {
+		return err
+	}
+	treasuryAvail, err := addDecimalString(treasuryBal.Available, amount)
+	if err != nil {
+		return err
+	}
+	if err := l.upsertVaultBalanceTx(ctx, tx, in.TenantID, treasuryAccountID, asset, treasuryAvail); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE sweep_orders
+SET status='DONE', tx_hash=$1, confirmations=GREATEST(confirmations,$2), required_confirmations=$3, updated_at=NOW()
+WHERE tenant_id=$4 AND sweep_order_id=$5
+`, in.TxHash, in.Confirmations, in.RequiredConfs, in.TenantID, in.SweepOrderID); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO vault_journals (tenant_id, biz_type, biz_id, treasury_account_id, asset, entry_side, amount, balance_after)
 VALUES ($1,'SWEEP',$2,$3,$4,'CREDIT',$5,$6)
 ON CONFLICT (tenant_id, biz_type, biz_id, treasury_account_id, entry_side) DO NOTHING
-`, in.TenantID, in.SweepOrderID, in.TreasuryAccountID, in.Asset, in.Amount, treasuryAvail); err != nil {
+`, in.TenantID, in.SweepOrderID, treasuryAccountID, asset, amount, treasuryAvail); err != nil {
 		return err
 	}
-
 	return tx.Commit()
+}
+
+func (l *PostgresLedger) FailSweepOnChain(ctx context.Context, tenantID, sweepOrderID, reason string, confirmations int64) error {
+	_, err := l.db.ExecContext(ctx, `
+UPDATE sweep_orders
+SET status='FAILED', reason=$1, confirmations=GREATEST(confirmations,$2), updated_at=NOW()
+WHERE tenant_id=$3 AND sweep_order_id=$4 AND status <> 'DONE'
+`, reason, confirmations, tenantID, sweepOrderID)
+	return err
 }
 
 func (l *PostgresLedger) GetBalance(ctx context.Context, tenantID, accountID, asset string) (ports.BalanceSnapshot, error) {
@@ -542,12 +790,16 @@ func (l *PostgresLedger) ensureSchema(ctx context.Context) error {
 id BIGSERIAL PRIMARY KEY,
 tenant_id TEXT NOT NULL,
 account_id TEXT NOT NULL,
-order_id TEXT NOT NULL,
-asset TEXT NOT NULL DEFAULT '',
-amount TEXT NOT NULL,
-status TEXT NOT NULL,
-tx_hash TEXT NOT NULL DEFAULT '',
-reason TEXT NOT NULL DEFAULT '',
+	order_id TEXT NOT NULL,
+	chain TEXT NOT NULL DEFAULT '',
+	network TEXT NOT NULL,
+	asset TEXT NOT NULL DEFAULT '',
+	amount TEXT NOT NULL,
+	status TEXT NOT NULL,
+	tx_hash TEXT NOT NULL DEFAULT '',
+	reason TEXT NOT NULL DEFAULT '',
+	confirmations BIGINT NOT NULL DEFAULT 0,
+	required_confirmations BIGINT NOT NULL DEFAULT 1,
 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 UNIQUE (tenant_id, order_id)
@@ -593,6 +845,7 @@ tenant_id TEXT NOT NULL,
 account_id TEXT NOT NULL,
 order_id TEXT NOT NULL,
 chain TEXT NOT NULL,
+network TEXT NOT NULL,
 coin TEXT NOT NULL,
 amount TEXT NOT NULL,
 tx_hash TEXT NOT NULL,
@@ -608,15 +861,22 @@ UNIQUE (tenant_id, order_id)
 );`,
 		`CREATE TABLE IF NOT EXISTS sweep_orders (
 id BIGSERIAL PRIMARY KEY,
-tenant_id TEXT NOT NULL,
-sweep_order_id TEXT NOT NULL,
-from_account_id TEXT NOT NULL,
-treasury_account_id TEXT NOT NULL,
-asset TEXT NOT NULL,
-amount TEXT NOT NULL,
-status TEXT NOT NULL,
-created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-UNIQUE (tenant_id, sweep_order_id)
+	tenant_id TEXT NOT NULL,
+	sweep_order_id TEXT NOT NULL,
+	from_account_id TEXT NOT NULL,
+	treasury_account_id TEXT NOT NULL,
+	chain TEXT NOT NULL DEFAULT '',
+	network TEXT NOT NULL,
+	asset TEXT NOT NULL,
+	amount TEXT NOT NULL,
+	tx_hash TEXT NOT NULL DEFAULT '',
+	reason TEXT NOT NULL DEFAULT '',
+	confirmations BIGINT NOT NULL DEFAULT 0,
+	required_confirmations BIGINT NOT NULL DEFAULT 1,
+	status TEXT NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	UNIQUE (tenant_id, sweep_order_id)
 );`,
 		`CREATE TABLE IF NOT EXISTS vault_balances (
 tenant_id TEXT NOT NULL,
@@ -649,16 +909,34 @@ UNIQUE (tenant_id, biz_type, biz_id, treasury_account_id, entry_side)
 		`ALTER TABLE ledger_freezes ADD COLUMN IF NOT EXISTS tx_hash TEXT NOT NULL DEFAULT '';`,
 		`ALTER TABLE ledger_freezes ADD COLUMN IF NOT EXISTS reason TEXT NOT NULL DEFAULT '';`,
 		`ALTER TABLE ledger_freezes ADD COLUMN IF NOT EXISTS asset TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE ledger_freezes ADD COLUMN IF NOT EXISTS chain TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE ledger_freezes ADD COLUMN IF NOT EXISTS network TEXT NOT NULL DEFAULT 'unknown';`,
+		`ALTER TABLE ledger_freezes ADD COLUMN IF NOT EXISTS confirmations BIGINT NOT NULL DEFAULT 0;`,
+		`ALTER TABLE ledger_freezes ADD COLUMN IF NOT EXISTS required_confirmations BIGINT NOT NULL DEFAULT 1;`,
 		`ALTER TABLE ledger_entries ADD COLUMN IF NOT EXISTS asset TEXT NOT NULL DEFAULT '';`,
 		`ALTER TABLE deposit_events ADD COLUMN IF NOT EXISTS required_confirmations BIGINT NOT NULL DEFAULT 1;`,
 		`ALTER TABLE deposit_events ADD COLUMN IF NOT EXISTS credited BOOLEAN NOT NULL DEFAULT FALSE;`,
 		`ALTER TABLE deposit_events ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();`,
+		`ALTER TABLE deposit_events ADD COLUMN IF NOT EXISTS network TEXT NOT NULL DEFAULT 'unknown';`,
+		`ALTER TABLE sweep_orders ADD COLUMN IF NOT EXISTS chain TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE sweep_orders ADD COLUMN IF NOT EXISTS network TEXT NOT NULL DEFAULT 'unknown';`,
+		`ALTER TABLE sweep_orders ADD COLUMN IF NOT EXISTS tx_hash TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE sweep_orders ADD COLUMN IF NOT EXISTS reason TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE sweep_orders ADD COLUMN IF NOT EXISTS confirmations BIGINT NOT NULL DEFAULT 0;`,
+		`ALTER TABLE sweep_orders ADD COLUMN IF NOT EXISTS required_confirmations BIGINT NOT NULL DEFAULT 1;`,
+		`ALTER TABLE sweep_orders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();`,
 	}
 	for _, stmt := range alterStmts {
 		if _, err := l.db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("ledger schema alter failed: %w", err)
 		}
 	}
+	_, _ = l.db.ExecContext(ctx, `UPDATE ledger_freezes SET network='unknown' WHERE network='' OR network IS NULL`)
+	_, _ = l.db.ExecContext(ctx, `UPDATE deposit_events SET network='unknown' WHERE network='' OR network IS NULL`)
+	_, _ = l.db.ExecContext(ctx, `UPDATE sweep_orders SET network='unknown' WHERE network='' OR network IS NULL`)
+	_, _ = l.db.ExecContext(ctx, `ALTER TABLE ledger_freezes ALTER COLUMN network DROP DEFAULT`)
+	_, _ = l.db.ExecContext(ctx, `ALTER TABLE deposit_events ALTER COLUMN network DROP DEFAULT`)
+	_, _ = l.db.ExecContext(ctx, `ALTER TABLE sweep_orders ALTER COLUMN network DROP DEFAULT`)
 	return nil
 }
 
@@ -698,4 +976,15 @@ func parseIntString(v string) (*big.Int, error) {
 		return nil, fmt.Errorf("negative amount not allowed: %s", v)
 	}
 	return n, nil
+}
+
+func normalizeDepositStatus(v string) string {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "REVERTED":
+		return "REVERTED"
+	case "CONFIRMED":
+		return "CONFIRMED"
+	default:
+		return "PENDING"
+	}
 }

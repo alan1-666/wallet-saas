@@ -8,12 +8,16 @@ type RiskPort interface {
 }
 
 type LedgerPort interface {
-	FreezeWithdraw(ctx context.Context, tenantID, accountID, orderID, asset, amount string) error
+	FreezeWithdraw(ctx context.Context, tenantID, accountID, orderID, chain, network, asset, amount string, requiredConfs int64) error
 	ConfirmWithdraw(ctx context.Context, tenantID, accountID, orderID, txHash string) error
+	ConfirmWithdrawOnChain(ctx context.Context, tenantID, orderID, txHash string, confirmations, requiredConfs int64) error
+	FailWithdrawOnChain(ctx context.Context, tenantID, orderID, reason string, confirmations int64) error
 	ReleaseWithdraw(ctx context.Context, tenantID, accountID, orderID, reason string) error
 	GetWithdrawStatus(ctx context.Context, tenantID, orderID string) (LedgerStatus, error)
 	CreditDeposit(ctx context.Context, in DepositCreditInput) error
-	CollectSweep(ctx context.Context, in SweepCollectInput) error
+	StartSweep(ctx context.Context, in SweepCollectInput) error
+	ConfirmSweepOnChain(ctx context.Context, in SweepConfirmInput) error
+	FailSweepOnChain(ctx context.Context, tenantID, sweepOrderID, reason string, confirmations int64) error
 	GetBalance(ctx context.Context, tenantID, accountID, asset string) (BalanceSnapshot, error)
 	ListAccountAssets(ctx context.Context, tenantID, accountID string) ([]AccountAsset, error)
 }
@@ -94,6 +98,7 @@ type DepositCreditInput struct {
 	AccountID     string
 	OrderID       string
 	Chain         string
+	Network       string
 	Coin          string
 	Amount        string
 	TxHash        string
@@ -109,8 +114,20 @@ type SweepCollectInput struct {
 	FromAccountID     string
 	TreasuryAccountID string
 	SweepOrderID      string
+	Chain             string
+	Network           string
 	Asset             string
 	Amount            string
+	TxHash            string
+	RequiredConfs     int64
+}
+
+type SweepConfirmInput struct {
+	TenantID      string
+	SweepOrderID  string
+	TxHash        string
+	Confirmations int64
+	RequiredConfs int64
 }
 
 type BroadcastParams struct {
@@ -155,7 +172,7 @@ type ChainPort interface {
 }
 
 type ChainAddressPort interface {
-	ConvertAddress(ctx context.Context, chain, addrType, publicKey string) (string, error)
+	ConvertAddress(ctx context.Context, chain, network, addrType, publicKey string) (string, error)
 }
 
 type WatchAddressInput struct {
@@ -199,10 +216,31 @@ type WalletAddress struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
+type ChainMetadata struct {
+	Chain            string `json:"chain"`
+	Network          string `json:"network"`
+	Model            string `json:"model"`
+	NativeAsset      string `json:"native_asset"`
+	MinConfirmations int64  `json:"min_confirmations"`
+	Enabled          bool   `json:"enabled"`
+}
+
+type ChainPolicy struct {
+	Chain                 string `json:"chain"`
+	Network               string `json:"network"`
+	RequiredConfirmations int64  `json:"required_confirmations"`
+	SafeDepth             int64  `json:"safe_depth"`
+	ReorgWindow           int64  `json:"reorg_window"`
+	FeePolicy             string `json:"fee_policy"`
+	Enabled               bool   `json:"enabled"`
+}
+
 type AddressRegistryPort interface {
 	UpsertAccount(ctx context.Context, in WalletAccount) (WalletAccount, error)
 	GetAccount(ctx context.Context, tenantID, accountID string) (WalletAccount, error)
 	ListAccounts(ctx context.Context, tenantID string, limit, offset int) ([]WalletAccount, error)
 	ListAccountAddresses(ctx context.Context, tenantID, accountID string) ([]WalletAddress, error)
+	GetChainMetadata(ctx context.Context, chain, network string) (ChainMetadata, error)
+	GetChainPolicy(ctx context.Context, chain, network string) (ChainPolicy, error)
 	UpsertWatchAddress(ctx context.Context, in WatchAddressInput) error
 }

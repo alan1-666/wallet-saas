@@ -12,6 +12,10 @@ A rewrite scaffold for centralized wallet SaaS.
 - `shared/proto`: proto contracts.
 - `shared/pkg`: reusable utilities.
 
+## Engineering conventions
+- Service package layout and directory rules: `docs/SERVICE_LAYOUT.md`
+- Chain/network control plane schema: `docs/CONTROL_PLANE_SCHEMA.md`
+
 ## Quick start
 ```bash
 cd wallet-saas-v2

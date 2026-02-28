@@ -6,6 +6,9 @@ service ChainGatewayService {
   rpc ConvertAddress(ConvertAddressRequest) returns (ConvertAddressResponse);
   rpc BuildUnsignedTx(BuildUnsignedTxRequest) returns (BuildUnsignedTxResponse);
   rpc SendTx(SendTxRequest) returns (SendTxResponse);
+  rpc ListIncomingTransfers(ListIncomingTransfersRequest) returns (ListIncomingTransfersResponse);
+  rpc GetTxFinality(TxFinalityRequest) returns (TxFinalityResponse);
+  rpc GetBalance(BalanceRequest) returns (BalanceResponse);
 }
 
 message TxVin {
@@ -25,6 +28,7 @@ message ConvertAddressRequest {
   string chain = 1;
   string type = 2;
   string public_key = 3;
+  string network = 4;
 }
 
 message ConvertAddressResponse {
@@ -58,4 +62,58 @@ message SendTxRequest {
 
 message SendTxResponse {
   string tx_hash = 1;
+}
+
+message ListIncomingTransfersRequest {
+  string model = 1;
+  string chain = 2;
+  string coin = 3;
+  string network = 4;
+  string address = 5;
+  uint32 page = 6;
+  uint32 page_size = 7;
+  string cursor = 8;
+}
+
+message IncomingTransfer {
+  string tx_hash = 1;
+  string from_address = 2;
+  string to_address = 3;
+  string amount = 4;
+  int64 confirmations = 5;
+  int64 index = 6;
+  string status = 7;
+}
+
+message ListIncomingTransfersResponse {
+  repeated IncomingTransfer items = 1;
+  string next_cursor = 2;
+}
+
+message TxFinalityRequest {
+  string chain = 1;
+  string coin = 2;
+  string network = 3;
+  string tx_hash = 4;
+}
+
+message TxFinalityResponse {
+  string tx_hash = 1;
+  int64 confirmations = 2;
+  string status = 3;
+  bool found = 4;
+}
+
+message BalanceRequest {
+  string chain = 1;
+  string coin = 2;
+  string network = 3;
+  string address = 4;
+  string contract_address = 5;
+}
+
+message BalanceResponse {
+  string balance = 1;
+  string network = 2;
+  string sequence = 3;
 }

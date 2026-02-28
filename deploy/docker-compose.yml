@@ -6,15 +6,18 @@ services:
     environment:
       API_GATEWAY_ADDR: ":8080"
       WALLET_CORE_HTTP_ADDR: "http://wallet-core:8081"
+      API_GATEWAY_DB_DSN: "postgres://wallet:wallet@postgres:5432/wallet?sslmode=disable"
+      API_GATEWAY_UPSTREAM_TIMEOUT_MS: "10000"
       GOCACHE: "/tmp/gocache"
       GOMODCACHE: "/tmp/gomodcache"
-      GOPROXY: "https://proxy.golang.org,direct"
+      GOPROXY: "https://goproxy.cn,direct"
     volumes:
       - ../:/app
     ports:
       - "8080:8080"
     depends_on:
       - wallet-core
+      - postgres
 
   wallet-core:
     image: golang:1.26
@@ -24,13 +27,12 @@ services:
       WALLET_CORE_HOST: "0.0.0.0"
       WALLET_CORE_PORT: "8081"
       SIGN_SERVICE_ADDR: "sign-service:9091"
-      CHAIN_GATEWAY_HTTP_ADDR: "http://chain-gateway:8082"
       CHAIN_GATEWAY_GRPC_ADDR: "chain-gateway:9082"
       WALLET_DB_DSN: "postgres://wallet:wallet@postgres:5432/wallet?sslmode=disable"
       RISK_MAX_WITHDRAW_AMOUNT: "1000000000000"
       GOCACHE: "/tmp/gocache"
       GOMODCACHE: "/tmp/gomodcache"
-      GOPROXY: "https://proxy.golang.org,direct"
+      GOPROXY: "https://goproxy.cn,direct"
     volumes:
       - ../:/app
     ports:
@@ -47,12 +49,15 @@ services:
     environment:
       CHAIN_GATEWAY_ADDR: ":8082"
       CHAIN_GATEWAY_GRPC_ADDR: ":9082"
-      CHAIN_ACCOUNT_CONFIG_PATH: "/app/legacy/wallet-chain-account/config.yml"
-      CHAIN_UTXO_CONFIG_PATH: "/app/legacy/wallet-chain-utxo/config.yml"
+      CHAIN_GATEWAY_DB_DSN: "postgres://wallet:wallet@postgres:5432/wallet?sslmode=disable"
+      CHAIN_GATEWAY_ENDPOINT_REFRESH_SECONDS: "15"
+      CHAIN_GATEWAY_ENDPOINT_PROBE_SECONDS: "120"
+      CHAIN_GATEWAY_ENDPOINT_FAIL_THRESHOLD: "3"
+      CHAIN_GATEWAY_ENDPOINT_OPEN_SECONDS: "30"
       GOLANG_PROTOBUF_REGISTRATION_CONFLICT: "warn"
       GOCACHE: "/tmp/gocache"
       GOMODCACHE: "/tmp/gomodcache"
-      GOPROXY: "https://proxy.golang.org,direct"
+      GOPROXY: "https://goproxy.cn,direct"
     volumes:
       - ../:/app
     ports:
@@ -69,7 +74,7 @@ services:
       SIGN_LEVELDB_PATH: "/data/sign-leveldb"
       GOCACHE: "/tmp/gocache"
       GOMODCACHE: "/tmp/gomodcache"
-      GOPROXY: "https://proxy.golang.org,direct"
+      GOPROXY: "https://goproxy.cn,direct"
     volumes:
       - ../:/app
       - sign_data:/data
@@ -82,25 +87,25 @@ services:
     command: sh -lc "export PATH=/usr/local/go/bin:$PATH && go run ./cmd"
     environment:
       SCAN_DB_DSN: "postgres://wallet:wallet@postgres:5432/wallet?sslmode=disable"
-      WALLET_CORE_HTTP_ADDR: "http://wallet-core:8081"
-      CHAIN_GATEWAY_HTTP_ADDR: "http://chain-gateway:8082"
-      SCAN_ETH_RPC_URL: "https://eth-sepolia.g.alchemy.com/v2/LKsuPrf-JVp3OUtc5khw_"
+      WALLET_CORE_HTTP_ADDR: "http://api-gateway:8080"
+      CHAIN_GATEWAY_GRPC_ADDR: "chain-gateway:9082"
       SCAN_API_TOKEN: "token_t1_full"
       SCAN_INTERVAL_SECONDS: "5"
-      SCAN_MIN_CONFIRMATIONS: "1"
-      SCAN_ACCOUNT_PAGE_SIZE: "50"
-      SCAN_ACCOUNT_MAX_PAGES: "2"
+      SCAN_ACCOUNT_PAGE_SIZE: "4"
+      SCAN_ACCOUNT_MAX_PAGES: "1"
       SCAN_WATCH_LIMIT: "500"
-      SCAN_ETH_LOOKBACK_BLOCKS: "300"
-      SCAN_ETH_MAX_BLOCKS_PER_TICK: "80"
+      SCAN_ADDR_CONCURRENCY: "2"
+      SCAN_SWEEP_MIN_BALANCE: "50"
+      SCAN_WALLET_CORE_TIMEOUT_MS: "10000"
+      SCAN_CHAIN_GATEWAY_TIMEOUT_MS: "30000"
       GOCACHE: "/tmp/gocache"
       GOMODCACHE: "/tmp/gomodcache"
-      GOPROXY: "https://proxy.golang.org,direct"
+      GOPROXY: "https://goproxy.cn,direct"
     volumes:
       - ../:/app
     depends_on:
       - postgres
-      - wallet-core
+      - api-gateway
       - chain-gateway
 
   postgres:

@@ -1,20 +1,31 @@
 # chain-gateway
 
-Multi-chain aggregation gateway (reusing legacy chain RPC services).
+Multi-chain aggregation gateway (plugin routing by `chain + network + model`).
+
+## Runtime mode
+- Read path (`ListIncomingTransfers`, `GetTxFinality`, `GetBalance`) for EVM/Solana chains is pure JSON-RPC.
+- Endpoint routing comes from DB control plane table `rpc_endpoints`.
 
 ## Upstream dependencies
-- legacy account/utxo chain code is embedded in-process under `/legacy/*`
+- no runtime dependency on legacy account/utxo dispatchers
+
+## Plugin model
+- model abstraction: `account` / `utxo`
+- each chain binds to adapter plugins through router registration
+- normalized capabilities exposed to upstream services:
+  - `ConvertAddress`
+  - `BuildUnsignedTx`
+  - `SendTx`
+  - `ListIncomingTransfers`
+  - `GetTxFinality`
+  - `GetBalance`
 
 ## Endpoints
 - `GET /healthz`
 - `POST /v1/chain/convert-address`
-- `POST /v1/chain/support-chains`
-- `POST /v1/chain/valid-address`
-- `POST /v1/chain/fee`
-- `POST /v1/chain/account`
-- `POST /v1/chain/tx-by-hash`
-- `POST /v1/chain/tx-by-address`
-- `POST /v1/chain/unspent-outputs` (utxo chain only)
+- `POST /v1/chain/list-incoming-transfers`
+- `POST /v1/chain/tx-finality`
+- `POST /v1/chain/balance`
 - `POST /v1/chain/send-tx`
 - `POST /v1/chain/build-unsigned`
 
@@ -34,8 +45,16 @@ UTXO response includes:
 ## Env
 - `CHAIN_GATEWAY_ADDR` (default `:8082`)
 - `CHAIN_GATEWAY_GRPC_ADDR` (default `:9082`)
-- `CHAIN_ACCOUNT_CONFIG_PATH` (default `/app/legacy/wallet-chain-account/config.yml`)
-- `CHAIN_UTXO_CONFIG_PATH` (default `/app/legacy/wallet-chain-utxo/config.yml`)
+- `CHAIN_GATEWAY_DB_DSN` (fallback: `WALLET_DB_DSN`)
+- `CHAIN_GATEWAY_ENDPOINT_REFRESH_SECONDS` (default `15`)
+- `CHAIN_GATEWAY_ENDPOINT_PROBE_SECONDS` (default `20`)
+- `CHAIN_GATEWAY_ENDPOINT_FAIL_THRESHOLD` (default `3`)
+- `CHAIN_GATEWAY_ENDPOINT_OPEN_SECONDS` (default `30`)
+
+## Control plane
+- SQL schema and seed examples: `/docs/CONTROL_PLANE_SCHEMA.md`
+- endpoint selection key: `chain + network + model`
+- no implicit `mainnet` fallback in API/runtime request path
 
 ## Internal gRPC
 - Service: `wallet.chaingateway.ChainGatewayService`
@@ -43,3 +62,6 @@ UTXO response includes:
   - `ConvertAddress`
   - `BuildUnsignedTx`
   - `SendTx`
+  - `ListIncomingTransfers`
+  - `GetTxFinality`
+  - `GetBalance`

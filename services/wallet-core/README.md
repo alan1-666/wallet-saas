@@ -16,11 +16,10 @@ State orchestration and domain logic.
 - `GET /v1/account/addresses?tenant_id=...&account_id=...`
 - `GET /v1/account/assets?tenant_id=...&account_id=...`
 
-## Security / Idempotency
-- Header `Authorization: Bearer <api_token>`
-- Header `X-Request-ID: <unique-request-id>` (idempotency key)
-- Body `tenant_id` must match token tenant
-- Account status must be `ACTIVE` for withdraw/deposit_notify/sweep/address_create
+## Responsibility boundary
+- `wallet-core` focuses on orchestration/state transitions/ledger.
+- auth, tenant isolation, sign-key permission, idempotency, anti-replay, audit are handled by `api-gateway`.
+- account status still enforced in `wallet-core` (`ACTIVE` required for withdraw/deposit_notify/sweep/address_create).
 
 ### Request example
 ```json
@@ -70,6 +69,7 @@ State orchestration and domain logic.
   "account_id": "a1",
   "order_id": "dep_0xhash_0_a1",
   "chain": "ethereum",
+  "network": "sepolia",
   "coin": "ETH",
   "amount": "1000000000000000",
   "tx_hash": "0xhash",
@@ -82,6 +82,7 @@ State orchestration and domain logic.
 ```
 - status transitions supported: `PENDING -> CONFIRMED -> REVERTED`
 - `CONFIRMED` credits balance once; `REVERTED` debits it back once (idempotent)
+- state regression is blocked (`CONFIRMED` will not be downgraded back to `PENDING`)
 
 ### Current limitation
 - If `key_ids` length is less than input count, last key will be reused for remaining inputs.
@@ -90,6 +91,7 @@ State orchestration and domain logic.
 - before sign/broadcast: `FreezeWithdraw`
 - broadcast success: `ConfirmWithdraw`
 - broadcast failure (or sign/build failure): `ReleaseWithdraw`
+- on-chain confirmation threshold for withdraw/sweep is taken from `chain_metadata.min_confirmations`
 
 ### Risk rules
 - Table: `risk_rules`
@@ -110,7 +112,6 @@ State orchestration and domain logic.
 - `WALLET_CORE_HOST` (default `0.0.0.0`)
 - `WALLET_CORE_PORT` (default `8081`)
 - `SIGN_SERVICE_ADDR` (default `127.0.0.1:9091`)
-- `CHAIN_GATEWAY_HTTP_ADDR` (default `http://127.0.0.1:8082`)
 - `CHAIN_GATEWAY_GRPC_ADDR` (default `127.0.0.1:9082`, internal call path)
 - `WALLET_DB_DSN` (optional, enables postgres risk+ledger adapters)
 - `RISK_MAX_WITHDRAW_AMOUNT` (default `1000000000000`)

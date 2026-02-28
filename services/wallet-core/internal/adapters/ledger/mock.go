@@ -12,11 +12,19 @@ func NewMock() *MockLedger {
 	return &MockLedger{}
 }
 
-func (m *MockLedger) FreezeWithdraw(_ context.Context, _, _, _, _, _ string) error {
+func (m *MockLedger) FreezeWithdraw(_ context.Context, _, _, _, _, _, _, _ string, _ int64) error {
 	return nil
 }
 
 func (m *MockLedger) ConfirmWithdraw(_ context.Context, _, _, _, _ string) error {
+	return nil
+}
+
+func (m *MockLedger) ConfirmWithdrawOnChain(_ context.Context, _, _, _ string, _, _ int64) error {
+	return nil
+}
+
+func (m *MockLedger) FailWithdrawOnChain(_ context.Context, _, _, _ string, _ int64) error {
 	return nil
 }
 
@@ -32,7 +40,15 @@ func (m *MockLedger) CreditDeposit(_ context.Context, _ ports.DepositCreditInput
 	return nil
 }
 
-func (m *MockLedger) CollectSweep(_ context.Context, _ ports.SweepCollectInput) error {
+func (m *MockLedger) StartSweep(_ context.Context, _ ports.SweepCollectInput) error {
+	return nil
+}
+
+func (m *MockLedger) ConfirmSweepOnChain(_ context.Context, _ ports.SweepConfirmInput) error {
+	return nil
+}
+
+func (m *MockLedger) FailSweepOnChain(_ context.Context, _, _, _ string, _ int64) error {
 	return nil
 }
 

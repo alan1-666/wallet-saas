@@ -1,8 +1,8 @@
 # scan-service
 
 Unified scan worker for two chain models:
-- `account` model: query `/v1/chain/tx-by-address`
-- `utxo` model: query `/v1/chain/unspent-outputs`
+- `account` model: call `ListIncomingTransfers` (gRPC)
+- `utxo` model: call `ListIncomingTransfers` (gRPC)
 
 For each observed event, scanner maintains state and notifies wallet-core:
 - `PENDING` (confirmations below threshold)
@@ -11,34 +11,35 @@ For each observed event, scanner maintains state and notifies wallet-core:
 
 Sweep triggering rules:
 - only when deposit status is `CONFIRMED`
-- `auto_sweep=false` (recommended default)
-- amount >= `sweep_threshold`
+- address balance must be `> SCAN_SWEEP_MIN_BALANCE` (default `50`)
 - skip when `account_id == treasury_account_id`
+
+Event dispatch model:
+- scanner writes deposit/sweep tasks into `scan_event_outbox`
+- outbox worker delivers to wallet-core with retry/backoff
+- event key is idempotent by `tenant + chain + network + tx_hash + index`
 
 ## Env
 - `SCAN_DB_DSN` PostgreSQL DSN
-- `WALLET_CORE_HTTP_ADDR` wallet-core base URL
-- `CHAIN_GATEWAY_HTTP_ADDR` chain-gateway base URL
-- `SCAN_API_TOKEN` wallet-core API token
+- `WALLET_CORE_HTTP_ADDR` API entry URL (recommended `api-gateway`, not direct wallet-core)
+- `CHAIN_GATEWAY_GRPC_ADDR` chain-gateway gRPC addr (default `127.0.0.1:9082`)
+- `SCAN_API_TOKEN` API token (sent as Bearer token)
 - `SCAN_INTERVAL_SECONDS` poll interval (default: `5`)
-- `SCAN_MIN_CONFIRMATIONS` global min confirmations (default: `1`)
 - `SCAN_ACCOUNT_PAGE_SIZE` account scan page size (default: `50`)
 - `SCAN_ACCOUNT_MAX_PAGES` account scan max pages per tick (default: `2`)
 - `SCAN_WATCH_LIMIT` max watch addresses per model each tick (default: `500`)
-- `SCAN_ETH_RPC_URL` Ethereum JSON-RPC URL (enables pure-RPC ETH scanning)
-- `SCAN_ETH_LOOKBACK_BLOCKS` first-run lookback window (default: `300`)
-- `SCAN_ETH_MAX_BLOCKS_PER_TICK` max ETH blocks scanned per tick (default: `80`)
+- `SCAN_ADDR_CONCURRENCY` concurrent address scan workers (default: `8`)
+- `SCAN_SWEEP_MIN_BALANCE` auto-sweep threshold, strict `>` compare (default: `50`)
+- `SCAN_WALLET_CORE_TIMEOUT_MS` API timeout (default: `10000`)
+- `SCAN_CHAIN_GATEWAY_TIMEOUT_MS` chain-gateway gRPC timeout (default: `10000`)
 
 ## Storage
 - `scan_watch_addresses`: watch targets (`model=account|utxo`)
 - `scan_checkpoints`: account cursor checkpoint / last tx
 - `scan_seen_events`: event state `(status,confirmations)` + dedup key `(tenant,account,model,chain,coin,network,address,tx_hash,event_index)`
+- `scan_event_outbox`: pending/failed outbound events for wallet-core notify/sweep
 
 ## Notes
-- Account-model parser now has chain parsers:
-  - EVM (`tx[].froms/tos/values`)
-  - TRON (same shape as EVM in legacy adapter)
-  - SOL (`tx[].from/to/value`)
-  - generic fallback for other chains
-- ETH can run in pure-RPC scan mode (block scanning by `eth_getBlockByNumber`) when `SCAN_ETH_RPC_URL` is set.
-- If account tx response does not include confirmations, scanner treats it as unknown and will not block credit on confirmations check.
+- Scanner only depends on normalized gRPC contract from `chain-gateway`.
+- Required confirmations come from watch rows, sourced from `chain_metadata.min_confirmations`.
+- Requests with missing `network` are rejected (no implicit `mainnet` default).

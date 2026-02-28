@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.3.0
 // - protoc             v6.33.1
-// source: shared/proto/chaingateway.proto
+// source: chaingateway.proto
 
 package chaingateway
 
@@ -19,9 +19,12 @@ import (
 const _ = grpc.SupportPackageIsVersion7
 
 const (
-	ChainGatewayService_ConvertAddress_FullMethodName  = "/wallet.chaingateway.ChainGatewayService/ConvertAddress"
-	ChainGatewayService_BuildUnsignedTx_FullMethodName = "/wallet.chaingateway.ChainGatewayService/BuildUnsignedTx"
-	ChainGatewayService_SendTx_FullMethodName          = "/wallet.chaingateway.ChainGatewayService/SendTx"
+	ChainGatewayService_ConvertAddress_FullMethodName        = "/wallet.chaingateway.ChainGatewayService/ConvertAddress"
+	ChainGatewayService_BuildUnsignedTx_FullMethodName       = "/wallet.chaingateway.ChainGatewayService/BuildUnsignedTx"
+	ChainGatewayService_SendTx_FullMethodName                = "/wallet.chaingateway.ChainGatewayService/SendTx"
+	ChainGatewayService_ListIncomingTransfers_FullMethodName = "/wallet.chaingateway.ChainGatewayService/ListIncomingTransfers"
+	ChainGatewayService_GetTxFinality_FullMethodName         = "/wallet.chaingateway.ChainGatewayService/GetTxFinality"
+	ChainGatewayService_GetBalance_FullMethodName            = "/wallet.chaingateway.ChainGatewayService/GetBalance"
 )
 
 // ChainGatewayServiceClient is the client API for ChainGatewayService service.
@@ -31,6 +34,9 @@ type ChainGatewayServiceClient interface {
 	ConvertAddress(ctx context.Context, in *ConvertAddressRequest, opts ...grpc.CallOption) (*ConvertAddressResponse, error)
 	BuildUnsignedTx(ctx context.Context, in *BuildUnsignedTxRequest, opts ...grpc.CallOption) (*BuildUnsignedTxResponse, error)
 	SendTx(ctx context.Context, in *SendTxRequest, opts ...grpc.CallOption) (*SendTxResponse, error)
+	ListIncomingTransfers(ctx context.Context, in *ListIncomingTransfersRequest, opts ...grpc.CallOption) (*ListIncomingTransfersResponse, error)
+	GetTxFinality(ctx context.Context, in *TxFinalityRequest, opts ...grpc.CallOption) (*TxFinalityResponse, error)
+	GetBalance(ctx context.Context, in *BalanceRequest, opts ...grpc.CallOption) (*BalanceResponse, error)
 }
 
 type chainGatewayServiceClient struct {
@@ -68,6 +74,33 @@ func (c *chainGatewayServiceClient) SendTx(ctx context.Context, in *SendTxReques
 	return out, nil
 }
 
+func (c *chainGatewayServiceClient) ListIncomingTransfers(ctx context.Context, in *ListIncomingTransfersRequest, opts ...grpc.CallOption) (*ListIncomingTransfersResponse, error) {
+	out := new(ListIncomingTransfersResponse)
+	err := c.cc.Invoke(ctx, ChainGatewayService_ListIncomingTransfers_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *chainGatewayServiceClient) GetTxFinality(ctx context.Context, in *TxFinalityRequest, opts ...grpc.CallOption) (*TxFinalityResponse, error) {
+	out := new(TxFinalityResponse)
+	err := c.cc.Invoke(ctx, ChainGatewayService_GetTxFinality_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *chainGatewayServiceClient) GetBalance(ctx context.Context, in *BalanceRequest, opts ...grpc.CallOption) (*BalanceResponse, error) {
+	out := new(BalanceResponse)
+	err := c.cc.Invoke(ctx, ChainGatewayService_GetBalance_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ChainGatewayServiceServer is the server API for ChainGatewayService service.
 // All implementations must embed UnimplementedChainGatewayServiceServer
 // for forward compatibility
@@ -75,6 +108,9 @@ type ChainGatewayServiceServer interface {
 	ConvertAddress(context.Context, *ConvertAddressRequest) (*ConvertAddressResponse, error)
 	BuildUnsignedTx(context.Context, *BuildUnsignedTxRequest) (*BuildUnsignedTxResponse, error)
 	SendTx(context.Context, *SendTxRequest) (*SendTxResponse, error)
+	ListIncomingTransfers(context.Context, *ListIncomingTransfersRequest) (*ListIncomingTransfersResponse, error)
+	GetTxFinality(context.Context, *TxFinalityRequest) (*TxFinalityResponse, error)
+	GetBalance(context.Context, *BalanceRequest) (*BalanceResponse, error)
 	mustEmbedUnimplementedChainGatewayServiceServer()
 }
 
@@ -90,6 +126,15 @@ func (UnimplementedChainGatewayServiceServer) BuildUnsignedTx(context.Context, *
 }
 func (UnimplementedChainGatewayServiceServer) SendTx(context.Context, *SendTxRequest) (*SendTxResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SendTx not implemented")
+}
+func (UnimplementedChainGatewayServiceServer) ListIncomingTransfers(context.Context, *ListIncomingTransfersRequest) (*ListIncomingTransfersResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListIncomingTransfers not implemented")
+}
+func (UnimplementedChainGatewayServiceServer) GetTxFinality(context.Context, *TxFinalityRequest) (*TxFinalityResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetTxFinality not implemented")
+}
+func (UnimplementedChainGatewayServiceServer) GetBalance(context.Context, *BalanceRequest) (*BalanceResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetBalance not implemented")
 }
 func (UnimplementedChainGatewayServiceServer) mustEmbedUnimplementedChainGatewayServiceServer() {}
 
@@ -158,6 +203,60 @@ func _ChainGatewayService_SendTx_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ChainGatewayService_ListIncomingTransfers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListIncomingTransfersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ChainGatewayServiceServer).ListIncomingTransfers(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ChainGatewayService_ListIncomingTransfers_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ChainGatewayServiceServer).ListIncomingTransfers(ctx, req.(*ListIncomingTransfersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ChainGatewayService_GetTxFinality_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TxFinalityRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ChainGatewayServiceServer).GetTxFinality(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ChainGatewayService_GetTxFinality_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ChainGatewayServiceServer).GetTxFinality(ctx, req.(*TxFinalityRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ChainGatewayService_GetBalance_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BalanceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ChainGatewayServiceServer).GetBalance(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ChainGatewayService_GetBalance_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ChainGatewayServiceServer).GetBalance(ctx, req.(*BalanceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ChainGatewayService_ServiceDesc is the grpc.ServiceDesc for ChainGatewayService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -177,7 +276,19 @@ var ChainGatewayService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "SendTx",
 			Handler:    _ChainGatewayService_SendTx_Handler,
 		},
+		{
+			MethodName: "ListIncomingTransfers",
+			Handler:    _ChainGatewayService_ListIncomingTransfers_Handler,
+		},
+		{
+			MethodName: "GetTxFinality",
+			Handler:    _ChainGatewayService_GetTxFinality_Handler,
+		},
+		{
+			MethodName: "GetBalance",
+			Handler:    _ChainGatewayService_GetBalance_Handler,
+		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "shared/proto/chaingateway.proto",
+	Metadata: "chaingateway.proto",
 }

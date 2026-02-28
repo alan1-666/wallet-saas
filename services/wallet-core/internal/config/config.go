@@ -8,7 +8,6 @@ import (
 type Config struct {
 	HTTPAddr         string
 	SignServiceAddr  string
-	ChainGatewayHTTP string
 	ChainGatewayGRPC string
 	PostgresDSN      string
 	RiskMaxAmount    string
@@ -31,10 +30,6 @@ func Load() Config {
 		signAddr = "127.0.0.1:9091"
 	}
 
-	chainGateway := os.Getenv("CHAIN_GATEWAY_HTTP_ADDR")
-	if chainGateway == "" {
-		chainGateway = "http://127.0.0.1:8082"
-	}
 	chainGatewayGRPC := os.Getenv("CHAIN_GATEWAY_GRPC_ADDR")
 	if chainGatewayGRPC == "" {
 		chainGatewayGRPC = "127.0.0.1:9082"
@@ -49,7 +44,6 @@ func Load() Config {
 	return Config{
 		HTTPAddr:         host + ":" + strconv.Itoa(port),
 		SignServiceAddr:  signAddr,
-		ChainGatewayHTTP: chainGateway,
 		ChainGatewayGRPC: chainGatewayGRPC,
 		PostgresDSN:      postgresDSN,
 		RiskMaxAmount:    riskMaxAmount,

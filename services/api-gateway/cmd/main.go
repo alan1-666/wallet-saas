@@ -3,11 +3,11 @@ package main
 import (
 	"log"
 
-	"wallet-saas-v2/services/api-gateway/internal/app"
+	"wallet-saas-v2/services/api-gateway/internal/bootstrap"
 )
 
 func main() {
-	if err := app.Run(); err != nil {
+	if err := bootstrap.Run(); err != nil {
 		log.Fatal(err)
 	}
 }

@@ -6,36 +6,34 @@ import (
 )
 
 type Config struct {
-	DBDSN            string
-	WalletCoreAddr   string
-	ChainGatewayAddr string
-	EthRPCURL        string
-	APIToken         string
-	IntervalSeconds  int
-	MinConfirmations int64
-	AccountPageSize  int
-	AccountMaxPages  int
-	WatchLimit       int
-	EthLookback      int
-	EthMaxBlocksTick int
-	EthRescanBlocks  int
+	DBDSN                 string
+	WalletCoreAddr        string
+	ChainGatewayGRPCAddr  string
+	APIToken              string
+	IntervalSeconds       int
+	AccountPageSize       int
+	AccountMaxPages       int
+	WatchLimit            int
+	AddrConcurrency       int
+	SweepMinBalance       string
+	WalletCoreTimeoutMS   int
+	ChainGatewayTimeoutMS int
 }
 
 func Load() Config {
 	cfg := Config{
-		DBDSN:            os.Getenv("SCAN_DB_DSN"),
-		WalletCoreAddr:   getenv("WALLET_CORE_HTTP_ADDR", "http://127.0.0.1:8081"),
-		ChainGatewayAddr: getenv("CHAIN_GATEWAY_HTTP_ADDR", "http://127.0.0.1:8082"),
-		EthRPCURL:        os.Getenv("SCAN_ETH_RPC_URL"),
-		APIToken:         os.Getenv("SCAN_API_TOKEN"),
-		IntervalSeconds:  atoi(getenv("SCAN_INTERVAL_SECONDS", "5"), 5),
-		MinConfirmations: int64(atoi(getenv("SCAN_MIN_CONFIRMATIONS", "1"), 1)),
-		AccountPageSize:  atoi(getenv("SCAN_ACCOUNT_PAGE_SIZE", "50"), 50),
-		AccountMaxPages:  atoi(getenv("SCAN_ACCOUNT_MAX_PAGES", "2"), 2),
-		WatchLimit:       atoi(getenv("SCAN_WATCH_LIMIT", "500"), 500),
-		EthLookback:      atoi(getenv("SCAN_ETH_LOOKBACK_BLOCKS", "300"), 300),
-		EthMaxBlocksTick: atoi(getenv("SCAN_ETH_MAX_BLOCKS_PER_TICK", "80"), 80),
-		EthRescanBlocks:  atoi(getenv("SCAN_ETH_RESCAN_BLOCKS", "500"), 500),
+		DBDSN:                 os.Getenv("SCAN_DB_DSN"),
+		WalletCoreAddr:        getenv("WALLET_CORE_HTTP_ADDR", getenv("WALLET_API_HTTP_ADDR", "http://127.0.0.1:8080")),
+		ChainGatewayGRPCAddr:  getenv("CHAIN_GATEWAY_GRPC_ADDR", "127.0.0.1:9082"),
+		APIToken:              os.Getenv("SCAN_API_TOKEN"),
+		IntervalSeconds:       atoi(getenv("SCAN_INTERVAL_SECONDS", "5"), 5),
+		AccountPageSize:       atoi(getenv("SCAN_ACCOUNT_PAGE_SIZE", "12"), 12),
+		AccountMaxPages:       atoi(getenv("SCAN_ACCOUNT_MAX_PAGES", "1"), 1),
+		WatchLimit:            atoi(getenv("SCAN_WATCH_LIMIT", "500"), 500),
+		AddrConcurrency:       atoi(getenv("SCAN_ADDR_CONCURRENCY", "2"), 2),
+		SweepMinBalance:       getenv("SCAN_SWEEP_MIN_BALANCE", "50"),
+		WalletCoreTimeoutMS:   atoi(getenv("SCAN_WALLET_CORE_TIMEOUT_MS", "10000"), 10000),
+		ChainGatewayTimeoutMS: atoi(getenv("SCAN_CHAIN_GATEWAY_TIMEOUT_MS", "10000"), 10000),
 	}
 	return cfg
 }

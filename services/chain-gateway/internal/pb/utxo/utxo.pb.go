@@ -7,11 +7,11 @@
 package utxo
 
 import (
-	common "wallet-saas-v2/services/chain-gateway/internal/pb/utxo/common"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
+	common "wallet-saas-v2/services/chain-gateway/internal/pb/utxo/common"
 )
 
 const (

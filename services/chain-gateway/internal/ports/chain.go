@@ -73,7 +73,7 @@ type TxQueryInput struct {
 }
 
 type ChainAdapter interface {
-	ConvertAddress(ctx context.Context, chain, addrType, publicKey string) (string, error)
+	ConvertAddress(ctx context.Context, chain, network, addrType, publicKey string) (string, error)
 	SendTx(ctx context.Context, chain, network, coin, rawTx string) (string, error)
 	BuildUnsignedAccount(ctx context.Context, chain, network, base64Tx string) (string, error)
 	BuildUnsignedUTXO(ctx context.Context, chain, network, fee string, vin []TxVin, vout []TxVout) (BuildUnsignedResult, error)

@@ -33,9 +33,8 @@ func (g *GRPCChain) Close() error {
 }
 
 func (g *GRPCChain) BuildUnsignedTx(ctx context.Context, params ports.BuildUnsignedParams) (ports.BuildUnsignedResult, error) {
-	network := params.Network
-	if network == "" {
-		network = "mainnet"
+	if params.Chain == "" || params.Network == "" {
+		return ports.BuildUnsignedResult{}, fmt.Errorf("chain and network are required")
 	}
 	base64Tx := params.Base64Tx
 	if base64Tx == "" {
@@ -53,7 +52,7 @@ func (g *GRPCChain) BuildUnsignedTx(ctx context.Context, params ports.BuildUnsig
 
 	resp, err := g.client.BuildUnsignedTx(ctx, &pb.BuildUnsignedTxRequest{
 		Chain:    params.Chain,
-		Network:  network,
+		Network:  params.Network,
 		Coin:     params.Coin,
 		Base64Tx: base64Tx,
 		Fee:      params.Fee,
@@ -70,13 +69,12 @@ func (g *GRPCChain) BuildUnsignedTx(ctx context.Context, params ports.BuildUnsig
 }
 
 func (g *GRPCChain) Broadcast(ctx context.Context, params ports.BroadcastParams) (string, error) {
-	network := params.Network
-	if network == "" {
-		network = "mainnet"
+	if params.Chain == "" || params.Network == "" {
+		return "", fmt.Errorf("chain and network are required")
 	}
 	resp, err := g.client.SendTx(ctx, &pb.SendTxRequest{
 		Chain:      params.Chain,
-		Network:    network,
+		Network:    params.Network,
 		Coin:       params.Coin,
 		RawTx:      params.RawTx,
 		UnsignedTx: params.UnsignedTx,
@@ -92,9 +90,13 @@ func (g *GRPCChain) Broadcast(ctx context.Context, params ports.BroadcastParams)
 	return resp.GetTxHash(), nil
 }
 
-func (g *GRPCChain) ConvertAddress(ctx context.Context, chain, addrType, publicKey string) (string, error) {
+func (g *GRPCChain) ConvertAddress(ctx context.Context, chain, network, addrType, publicKey string) (string, error) {
+	if chain == "" || network == "" {
+		return "", fmt.Errorf("chain and network are required")
+	}
 	resp, err := g.client.ConvertAddress(ctx, &pb.ConvertAddressRequest{
 		Chain:     chain,
+		Network:   network,
 		Type:      addrType,
 		PublicKey: publicKey,
 	})

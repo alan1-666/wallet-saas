@@ -1,12 +1,18 @@
 package config
 
-import "os"
+import (
+	"os"
+	"strconv"
+)
 
 type Config struct {
-	HTTPAddr       string
-	GRPCAddr       string
-	AccountCfgPath string
-	UtxoCfgPath    string
+	HTTPAddr               string
+	GRPCAddr               string
+	PostgresDSN            string
+	EndpointRefreshSeconds int
+	EndpointProbeSeconds   int
+	EndpointFailThreshold  int
+	EndpointOpenSeconds    int
 }
 
 func Load() Config {
@@ -19,15 +25,29 @@ func Load() Config {
 		grpcAddr = ":9082"
 	}
 
-	accountCfg := os.Getenv("CHAIN_ACCOUNT_CONFIG_PATH")
-	if accountCfg == "" {
-		accountCfg = "/app/legacy/wallet-chain-account/config.yml"
+	postgresDSN := os.Getenv("CHAIN_GATEWAY_DB_DSN")
+	if postgresDSN == "" {
+		postgresDSN = os.Getenv("WALLET_DB_DSN")
 	}
 
-	utxoCfg := os.Getenv("CHAIN_UTXO_CONFIG_PATH")
-	if utxoCfg == "" {
-		utxoCfg = "/app/legacy/wallet-chain-utxo/config.yml"
+	return Config{
+		HTTPAddr:               httpAddr,
+		GRPCAddr:               grpcAddr,
+		PostgresDSN:            postgresDSN,
+		EndpointRefreshSeconds: atoi(os.Getenv("CHAIN_GATEWAY_ENDPOINT_REFRESH_SECONDS"), 15),
+		EndpointProbeSeconds:   atoi(os.Getenv("CHAIN_GATEWAY_ENDPOINT_PROBE_SECONDS"), 20),
+		EndpointFailThreshold:  atoi(os.Getenv("CHAIN_GATEWAY_ENDPOINT_FAIL_THRESHOLD"), 3),
+		EndpointOpenSeconds:    atoi(os.Getenv("CHAIN_GATEWAY_ENDPOINT_OPEN_SECONDS"), 30),
 	}
+}
 
-	return Config{HTTPAddr: httpAddr, GRPCAddr: grpcAddr, AccountCfgPath: accountCfg, UtxoCfgPath: utxoCfg}
+func atoi(v string, fallback int) int {
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n
 }
