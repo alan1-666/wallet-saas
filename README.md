@@ -23,3 +23,19 @@ go work sync
 ```
 
 Each service is intentionally lightweight and can run independently for incremental migration.
+
+## Production Docker deployment
+Use the production compose file with multi-stage Docker builds:
+
+```bash
+cd deploy
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+Log files are written to a unified fixed directory inside containers:
+- root: `/var/log/wallet-saas`
+- per service: `/var/log/wallet-saas/<service>/`
+- filename: `<service>-YYYYMMDD.log`
+- current symlink: `/var/log/wallet-saas/<service>/current.log`
+
+Host path is fixed by default to `/data/wallet-saas/logs` (override with `WALLET_LOGS_DIR` in environment).
