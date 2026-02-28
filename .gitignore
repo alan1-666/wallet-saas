@@ -13,3 +13,8 @@ coverage.out
 # Local runtime artifacts
 /tmp/
 *.log
+
+# Local deployment files (keep untracked)
+.dockerignore
+deploy/docker-compose.prod.yml
+deploy/docker/
