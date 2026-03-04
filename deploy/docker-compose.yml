@@ -14,7 +14,7 @@ services:
     volumes:
       - ../:/app
     ports:
-      - "8080:8080"
+      - "18080:8080"
     depends_on:
       - wallet-core
       - postgres
@@ -36,7 +36,7 @@ services:
     volumes:
       - ../:/app
     ports:
-      - "8081:8081"
+      - "18081:8081"
     depends_on:
       - sign-service
       - chain-gateway
@@ -50,6 +50,9 @@ services:
       CHAIN_GATEWAY_ADDR: ":8082"
       CHAIN_GATEWAY_GRPC_ADDR: ":9082"
       CHAIN_GATEWAY_DB_DSN: "postgres://wallet:wallet@postgres:5432/wallet?sslmode=disable"
+      CHAIN_GATEWAY_ACCOUNT_NETWORK: "devnet"
+      CHAIN_GATEWAY_NETWORK: "devnet"
+      CHAIN_GATEWAY_ACCOUNT_SOL_RPC_URL: "https://api.devnet.solana.com"
       CHAIN_GATEWAY_ENDPOINT_REFRESH_SECONDS: "15"
       CHAIN_GATEWAY_ENDPOINT_PROBE_SECONDS: "120"
       CHAIN_GATEWAY_ENDPOINT_FAIL_THRESHOLD: "3"
@@ -61,8 +64,8 @@ services:
     volumes:
       - ../:/app
     ports:
-      - "8082:8082"
-      - "9082:9082"
+      - "18082:8082"
+      - "19082:9082"
 
   sign-service:
     image: golang:1.26
@@ -79,17 +82,54 @@ services:
       - ../:/app
       - sign_data:/data
     ports:
-      - "9091:9091"
+      - "19091:9091"
 
-  scan-service:
+  scan-account-service:
     image: golang:1.26
-    working_dir: /app/services/scan-service
+    working_dir: /app/services/scan-account-service
     command: sh -lc "export PATH=/usr/local/go/bin:$PATH && go run ./cmd"
     environment:
       SCAN_DB_DSN: "postgres://wallet:wallet@postgres:5432/wallet?sslmode=disable"
       WALLET_CORE_HTTP_ADDR: "http://api-gateway:8080"
       CHAIN_GATEWAY_GRPC_ADDR: "chain-gateway:9082"
       SCAN_API_TOKEN: "token_t1_full"
+      PROJECT_NOTIFY_BASE_URL: "http://host.docker.internal:8083"
+      PROJECT_NOTIFY_TOKEN: "fundex_notify_local_token"
+      PROJECT_NOTIFY_TIMEOUT_MS: "5000"
+      PROJECT_NOTIFY_CHAIN_ID_MAP: "sol:devnet=100000,solana:devnet=100000,sol:mainnet=100000,solana:mainnet=100000"
+      PROJECT_NOTIFY_DEFAULT_CHAIN_ID: "0"
+      SCAN_INTERVAL_SECONDS: "5"
+      SCAN_ACCOUNT_PAGE_SIZE: "4"
+      SCAN_ACCOUNT_MAX_PAGES: "1"
+      SCAN_WATCH_LIMIT: "500"
+      SCAN_ADDR_CONCURRENCY: "2"
+      SCAN_SWEEP_MIN_BALANCE: "50"
+      SCAN_WALLET_CORE_TIMEOUT_MS: "10000"
+      SCAN_CHAIN_GATEWAY_TIMEOUT_MS: "30000"
+      GOCACHE: "/tmp/gocache"
+      GOMODCACHE: "/tmp/gomodcache"
+      GOPROXY: "https://goproxy.cn,direct"
+    volumes:
+      - ../:/app
+    depends_on:
+      - postgres
+      - api-gateway
+      - chain-gateway
+
+  scan-utxo-service:
+    image: golang:1.26
+    working_dir: /app/services/scan-utxo-service
+    command: sh -lc "export PATH=/usr/local/go/bin:$PATH && go run ./cmd"
+    environment:
+      SCAN_DB_DSN: "postgres://wallet:wallet@postgres:5432/wallet?sslmode=disable"
+      WALLET_CORE_HTTP_ADDR: "http://api-gateway:8080"
+      CHAIN_GATEWAY_GRPC_ADDR: "chain-gateway:9082"
+      SCAN_API_TOKEN: "token_t1_full"
+      PROJECT_NOTIFY_BASE_URL: "http://host.docker.internal:8083"
+      PROJECT_NOTIFY_TOKEN: "fundex_notify_local_token"
+      PROJECT_NOTIFY_TIMEOUT_MS: "5000"
+      PROJECT_NOTIFY_CHAIN_ID_MAP: "sol:devnet=100000,solana:devnet=100000,sol:mainnet=100000,solana:mainnet=100000"
+      PROJECT_NOTIFY_DEFAULT_CHAIN_ID: "0"
       SCAN_INTERVAL_SECONDS: "5"
       SCAN_ACCOUNT_PAGE_SIZE: "4"
       SCAN_ACCOUNT_MAX_PAGES: "1"

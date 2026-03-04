@@ -25,7 +25,7 @@ func (s *ChainService) BuildUnsigned(ctx context.Context, in BuildUnsignedInput)
 		})
 	}
 
-	unsigned, err := withRetry(ctx, "build-unsigned-account", func() (string, error) {
+	unsigned, err := withRetry(ctx, "build-unsigned-account", func() (ports.BuildUnsignedResult, error) {
 		return binding.Adapter.BuildUnsignedAccount(ctx, binding.Chain, in.Network, in.Base64Tx)
 	})
 	if err != nil {
@@ -36,7 +36,7 @@ func (s *ChainService) BuildUnsigned(ctx context.Context, in BuildUnsignedInput)
 			return binding.Adapter.BuildUnsignedUTXO(ctx, binding.Chain, in.Network, in.Fee, in.Vin, in.Vout)
 		})
 	}
-	return ports.BuildUnsignedResult{UnsignedTx: unsigned}, nil
+	return unsigned, nil
 }
 
 func (s *ChainService) SendTx(ctx context.Context, in SendTxInput) (string, error) {
@@ -53,31 +53,42 @@ func (s *ChainService) SendTx(ctx context.Context, in SendTxInput) (string, erro
 		if len(in.Signatures) != len(in.PublicKeys) {
 			return "", fmt.Errorf("signature count mismatch public_keys count")
 		}
-		txData, err := base64.StdEncoding.DecodeString(in.UnsignedTx)
-		if err != nil {
-			return "", fmt.Errorf("invalid unsigned_tx, require base64")
-		}
-		sigs := make([][]byte, 0, len(in.Signatures))
-		for _, sig := range in.Signatures {
-			b, err := decodeHexOrBase64(sig)
-			if err != nil {
-				return "", fmt.Errorf("invalid signature format")
+		if binding.Model == ports.ModelAccount {
+			if len(in.Signatures) != 1 || len(in.PublicKeys) != 1 {
+				return "", fmt.Errorf("account model supports single signature, got signatures=%d public_keys=%d", len(in.Signatures), len(in.PublicKeys))
 			}
-			sigs = append(sigs, b)
-		}
-		pubs := make([][]byte, 0, len(in.PublicKeys))
-		for _, pub := range in.PublicKeys {
-			b, err := decodeHexOrBase64(pub)
+			signedTx, err := s.buildSignedAccount(ctx, binding, in.Network, in.UnsignedTx, in.Signatures[0], in.PublicKeys[0])
 			if err != nil {
-				return "", fmt.Errorf("invalid public key format")
+				return "", err
 			}
-			pubs = append(pubs, b)
+			rawTx = signedTx
+		} else {
+			txData, err := base64.StdEncoding.DecodeString(in.UnsignedTx)
+			if err != nil {
+				return "", fmt.Errorf("invalid unsigned_tx, require base64")
+			}
+			sigs := make([][]byte, 0, len(in.Signatures))
+			for _, sig := range in.Signatures {
+				b, err := decodeHexOrBase64(sig)
+				if err != nil {
+					return "", fmt.Errorf("invalid signature format")
+				}
+				sigs = append(sigs, b)
+			}
+			pubs := make([][]byte, 0, len(in.PublicKeys))
+			for _, pub := range in.PublicKeys {
+				b, err := decodeHexOrBase64(pub)
+				if err != nil {
+					return "", fmt.Errorf("invalid public key format")
+				}
+				pubs = append(pubs, b)
+			}
+			signedTxData, err := s.buildSignedUTXO(ctx, binding, in.Network, txData, sigs, pubs)
+			if err != nil {
+				return "", err
+			}
+			rawTx = string(signedTxData)
 		}
-		signedTxData, err := s.buildSignedUTXO(ctx, binding, in.Network, txData, sigs, pubs)
-		if err != nil {
-			return "", err
-		}
-		rawTx = string(signedTxData)
 	}
 	if rawTx == "" {
 		return "", fmt.Errorf("raw_tx is required")
@@ -103,6 +114,12 @@ func (s *ChainService) buildSignedUTXO(ctx context.Context, binding ports.Plugin
 		return nil, err
 	}
 	return out, nil
+}
+
+func (s *ChainService) buildSignedAccount(ctx context.Context, binding ports.PluginBinding, network, base64Tx, signature, publicKey string) (string, error) {
+	return withRetry(ctx, "build-signed-account", func() (string, error) {
+		return binding.Adapter.BuildSignedAccount(ctx, binding.Chain, network, base64Tx, signature, publicKey)
+	})
 }
 
 func decodeHexOrBase64(s string) ([]byte, error) {

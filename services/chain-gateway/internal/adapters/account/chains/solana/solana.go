@@ -717,14 +717,9 @@ func organizeTransactionsByBlock(txResults []*TransactionResult) ([]*account.Blo
 }
 
 func (c *ChainAdaptor) BuildUnSignTransaction(req *account.UnSignTransactionRequest) (*account.UnSignTransactionResponse, error) {
-	jsonBytes, err := base64.StdEncoding.DecodeString(req.Base64Tx)
+	data, err := c.decodeTxStructure(req.Base64Tx)
 	if err != nil {
-		log.Error("Failed to decode base64 string", "err", err)
-		return nil, err
-	}
-	var data TxStructure
-	if err := json.Unmarshal(jsonBytes, &data); err != nil {
-		log.Error("Failed to parse JSON", "err", err)
+		log.Error("Failed to decode tx payload", "err", err)
 		return nil, err
 	}
 	value, _ := strconv.ParseUint(data.Value, 10, 64)
@@ -824,16 +819,50 @@ func (c *ChainAdaptor) BuildUnSignTransaction(req *account.UnSignTransactionRequ
 	}, nil
 }
 
-func (c ChainAdaptor) BuildSignedTransaction(req *account.SignedTransactionRequest) (*account.SignedTransactionResponse, error) {
-	jsonBytes, err := base64.StdEncoding.DecodeString(req.Base64Tx)
+func (c *ChainAdaptor) decodeTxStructure(base64Tx string) (TxStructure, error) {
+	var data TxStructure
+	jsonBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(base64Tx))
 	if err != nil {
-		log.Error("Failed to decode base64 string", "err", err)
-		return nil, err
+		return data, err
+	}
+	raw := strings.TrimSpace(string(jsonBytes))
+	if raw == "" {
+		return data, fmt.Errorf("empty tx payload")
+	}
+	if err := json.Unmarshal(jsonBytes, &data); err == nil {
+		if strings.TrimSpace(data.Nonce) == "" {
+			nonce, nonceErr := c.solCli.GetLatestBlockhash(Confirmed)
+			if nonceErr != nil {
+				return data, nonceErr
+			}
+			data.Nonce = nonce
+		}
+		return data, nil
 	}
 
-	var data TxStructure
-	if err := json.Unmarshal(jsonBytes, &data); err != nil {
-		log.Error("Failed to parse JSON", "err", err)
+	parts := strings.Split(raw, ":")
+	// Legacy wallet-core payload: chain:from:to:amount
+	if len(parts) == 4 {
+		data = TxStructure{
+			FromAddress: strings.TrimSpace(parts[1]),
+			ToAddress:   strings.TrimSpace(parts[2]),
+			Value:       strings.TrimSpace(parts[3]),
+		}
+		nonce, nonceErr := c.solCli.GetLatestBlockhash(Confirmed)
+		if nonceErr != nil {
+			return data, nonceErr
+		}
+		data.Nonce = nonce
+		return data, nil
+	}
+
+	return data, fmt.Errorf("unsupported tx payload format")
+}
+
+func (c ChainAdaptor) BuildSignedTransaction(req *account.SignedTransactionRequest) (*account.SignedTransactionResponse, error) {
+	data, err := c.decodeTxStructure(req.Base64Tx)
+	if err != nil {
+		log.Error("Failed to decode tx payload", "err", err)
 		return nil, err
 	}
 
@@ -923,13 +952,20 @@ func (c ChainAdaptor) BuildSignedTransaction(req *account.SignedTransactionReque
 		tx.Signatures = make([]solana.Signature, 1)
 	}
 
-	signatureBytes, err := hex.DecodeString(data.Signature)
+	signatureHex := strings.TrimSpace(req.Signature)
+	if signatureHex == "" {
+		signatureHex = strings.TrimSpace(data.Signature)
+	}
+	if signatureHex == "" {
+		return nil, fmt.Errorf("signature is required")
+	}
+	signatureBytes, err := hex.DecodeString(signatureHex)
 	if err != nil {
-		log.Error("Failed to decode hex signature", "err", err)
+		return nil, fmt.Errorf("failed to decode hex signature: %w", err)
 	}
 
 	if len(signatureBytes) != 64 {
-		log.Error("Invalid signature length", "length", len(signatureBytes))
+		return nil, fmt.Errorf("invalid signature length: %d", len(signatureBytes))
 	}
 
 	var solanaSig solana.Signature

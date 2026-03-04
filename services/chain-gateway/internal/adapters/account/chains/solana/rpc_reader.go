@@ -18,14 +18,16 @@ import (
 var ErrNoEndpoint = errors.New("no rpc endpoint configured")
 
 type RPCReader struct {
-	Endpoints  *endpoint.Manager
-	HTTPClient *http.Client
+	Endpoints   *endpoint.Manager
+	HTTPClient  *http.Client
+	FallbackURL string
 }
 
-func NewRPCReader(endpoints *endpoint.Manager) *RPCReader {
+func NewRPCReader(endpoints *endpoint.Manager, fallbackURL string) *RPCReader {
 	return &RPCReader{
-		Endpoints:  endpoints,
-		HTTPClient: &http.Client{Timeout: 12 * time.Second},
+		Endpoints:   endpoints,
+		HTTPClient:  &http.Client{Timeout: 12 * time.Second},
+		FallbackURL: strings.TrimSpace(fallbackURL),
 	}
 }
 
@@ -39,10 +41,10 @@ func (r *RPCReader) GetBalance(ctx context.Context, chain, network, address stri
 		strings.TrimSpace(address),
 		map[string]any{"commitment": "confirmed"},
 	}, &out); err != nil {
-		r.Endpoints.ReportFailure(ep.Key, err)
+		r.ReportFailure(ep.Key, err)
 		return ports.BalanceResult{}, err
 	}
-	r.Endpoints.ReportSuccess(ep.Key)
+	r.ReportSuccess(ep.Key)
 	return ports.BalanceResult{
 		Balance: strconv.FormatInt(out.Value, 10),
 		Network: strings.ToLower(strings.TrimSpace(network)),
@@ -56,16 +58,16 @@ func (r *RPCReader) GetTxFinality(ctx context.Context, chain, network, txHash st
 	}
 	latestSlot, err := r.getLatestSlot(ctx, ep)
 	if err != nil {
-		r.Endpoints.ReportFailure(ep.Key, err)
+		r.ReportFailure(ep.Key, err)
 		return ports.TxFinality{}, err
 	}
 	status, found, err := r.getSignatureStatus(ctx, ep, txHash)
 	if err != nil {
-		r.Endpoints.ReportFailure(ep.Key, err)
+		r.ReportFailure(ep.Key, err)
 		return ports.TxFinality{}, err
 	}
 	if !found {
-		r.Endpoints.ReportSuccess(ep.Key)
+		r.ReportSuccess(ep.Key)
 		return ports.TxFinality{
 			TxHash: strings.TrimSpace(txHash),
 			Status: "PENDING",
@@ -82,7 +84,7 @@ func (r *RPCReader) GetTxFinality(ctx context.Context, chain, network, txHash st
 	} else if confirmations > 0 || status.ConfirmationStatus == "confirmed" || status.ConfirmationStatus == "finalized" {
 		statusText = "CONFIRMED"
 	}
-	r.Endpoints.ReportSuccess(ep.Key)
+	r.ReportSuccess(ep.Key)
 	return ports.TxFinality{
 		TxHash:        strings.TrimSpace(txHash),
 		Confirmations: confirmations,
@@ -109,11 +111,11 @@ func (r *RPCReader) ListIncomingTransfers(ctx context.Context, chain, network, a
 	state := parseCursor(cursor)
 	sigs, err := r.getSignaturesForAddress(ctx, ep, strings.TrimSpace(address), int(pageSize), state.Before, state.Until)
 	if err != nil {
-		r.Endpoints.ReportFailure(ep.Key, err)
+		r.ReportFailure(ep.Key, err)
 		return ports.IncomingTransferResult{}, err
 	}
 	if len(sigs) == 0 {
-		r.Endpoints.ReportSuccess(ep.Key)
+		r.ReportSuccess(ep.Key)
 		return ports.IncomingTransferResult{Items: nil, NextCursor: state.watermark()}, nil
 	}
 	if state.Head == "" {
@@ -122,7 +124,7 @@ func (r *RPCReader) ListIncomingTransfers(ctx context.Context, chain, network, a
 
 	latestSlot, err := r.getLatestSlot(ctx, ep)
 	if err != nil {
-		r.Endpoints.ReportFailure(ep.Key, err)
+		r.ReportFailure(ep.Key, err)
 		return ports.IncomingTransferResult{}, err
 	}
 
@@ -131,7 +133,7 @@ func (r *RPCReader) ListIncomingTransfers(ctx context.Context, chain, network, a
 	for idx, sig := range sigs {
 		tx, found, err := r.getTransaction(ctx, ep, sig.Signature)
 		if err != nil {
-			r.Endpoints.ReportFailure(ep.Key, err)
+			r.ReportFailure(ep.Key, err)
 			return ports.IncomingTransferResult{}, err
 		}
 		if !found {
@@ -148,7 +150,7 @@ func (r *RPCReader) ListIncomingTransfers(ctx context.Context, chain, network, a
 	if len(sigs) == int(pageSize) {
 		next = encodeCursor(cursorState{Head: state.Head, Until: state.Until, Before: sigs[len(sigs)-1].Signature})
 	}
-	r.Endpoints.ReportSuccess(ep.Key)
+	r.ReportSuccess(ep.Key)
 	return ports.IncomingTransferResult{Items: items, NextCursor: next}, nil
 }
 
@@ -199,14 +201,43 @@ func buildIncomingTransferFromTx(tx solanaTx, watch string, sig solanaSignatureI
 }
 
 func (r *RPCReader) selectEndpoint(chain, network string) (endpoint.SelectedEndpoint, error) {
-	if r == nil || r.Endpoints == nil {
+	if r == nil {
 		return endpoint.SelectedEndpoint{}, ErrNoEndpoint
 	}
-	ep, err := r.Endpoints.Select(chain, network, string(ports.ModelAccount))
-	if err != nil {
-		return endpoint.SelectedEndpoint{}, fmt.Errorf("%w: %v", ErrNoEndpoint, err)
+	if r.Endpoints != nil {
+		ep, err := r.Endpoints.Select(chain, network, string(ports.ModelAccount))
+		if err == nil {
+			return ep, nil
+		}
+		if strings.TrimSpace(r.FallbackURL) == "" {
+			return endpoint.SelectedEndpoint{}, fmt.Errorf("%w: %v", ErrNoEndpoint, err)
+		}
 	}
-	return ep, nil
+	if strings.TrimSpace(r.FallbackURL) != "" {
+		return endpoint.SelectedEndpoint{
+			Key:       "solana-fallback-rpc",
+			Chain:     strings.ToLower(strings.TrimSpace(chain)),
+			Network:   strings.ToLower(strings.TrimSpace(network)),
+			Model:     string(ports.ModelAccount),
+			URL:       strings.TrimSpace(r.FallbackURL),
+			TimeoutMS: 12000,
+		}, nil
+	}
+	return endpoint.SelectedEndpoint{}, ErrNoEndpoint
+}
+
+func (r *RPCReader) ReportFailure(endpointKey string, reason error) {
+	if r == nil || r.Endpoints == nil {
+		return
+	}
+	r.Endpoints.ReportFailure(endpointKey, reason)
+}
+
+func (r *RPCReader) ReportSuccess(endpointKey string) {
+	if r == nil || r.Endpoints == nil {
+		return
+	}
+	r.Endpoints.ReportSuccess(endpointKey)
 }
 
 func (r *RPCReader) getLatestSlot(ctx context.Context, ep endpoint.SelectedEndpoint) (uint64, error) {

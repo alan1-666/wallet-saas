@@ -2,7 +2,11 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
+	"strings"
+
+	"github.com/mr-tron/base58"
 
 	"wallet-saas-v2/services/wallet-core/internal/ports"
 )
@@ -18,9 +22,12 @@ func (o *WithdrawOrchestrator) resolveKeys(req WithdrawRequest) ([]string, error
 	return keys, nil
 }
 
-func resolveSignType(signType string, signHashes []string) string {
+func resolveSignType(signType, chain string, signHashes []string) string {
 	if signType != "" {
 		return signType
+	}
+	if chainUsesEdDSA(chain) {
+		return "eddsa"
 	}
 	if len(signHashes) > 0 {
 		return "ecdsa"
@@ -28,7 +35,16 @@ func resolveSignType(signType string, signHashes []string) string {
 	return "eddsa"
 }
 
-func (o *WithdrawOrchestrator) buildSignatures(ctx context.Context, signType string, keys []string, signHashes []string) ([]string, []string, error) {
+func chainUsesEdDSA(chain string) bool {
+	switch strings.ToLower(strings.TrimSpace(chain)) {
+	case "sol", "solana", "apt", "aptos", "sui", "ton", "xlm", "stellar":
+		return true
+	default:
+		return false
+	}
+}
+
+func (o *WithdrawOrchestrator) buildSignatures(ctx context.Context, signType, chain string, keys []string, signHashes []string) ([]string, []string, error) {
 	signatures := make([]string, 0, len(signHashes))
 	publicKeys := make([]string, 0, len(signHashes))
 	for i, signHash := range signHashes {
@@ -41,7 +57,7 @@ func (o *WithdrawOrchestrator) buildSignatures(ctx context.Context, signType str
 			return nil, nil, err
 		}
 		signatures = append(signatures, sig)
-		publicKeys = append(publicKeys, keys[keyIdx])
+		publicKeys = append(publicKeys, normalizeBroadcastPublicKey(chain, keys[keyIdx]))
 	}
 	return signatures, publicKeys, nil
 }
@@ -52,4 +68,32 @@ func (o *WithdrawOrchestrator) signAndBroadcastRaw(ctx context.Context, req With
 		return "", err
 	}
 	return o.broadcastRawTx(ctx, req, sig)
+}
+
+func normalizeBroadcastPublicKey(chain, key string) string {
+	if !isSolanaChain(chain) {
+		return key
+	}
+	k := strings.TrimSpace(key)
+	h := strings.TrimPrefix(strings.ToLower(k), "0x")
+	if len(h) != 64 {
+		return key
+	}
+	raw, err := hex.DecodeString(h)
+	if err != nil || len(raw) != 32 {
+		return key
+	}
+	if out := base58.Encode(raw); strings.TrimSpace(out) != "" {
+		return out
+	}
+	return key
+}
+
+func isSolanaChain(chain string) bool {
+	switch strings.ToLower(strings.TrimSpace(chain)) {
+	case "sol", "solana":
+		return true
+	default:
+		return false
+	}
 }

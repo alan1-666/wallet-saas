@@ -44,7 +44,7 @@ func (h *WithdrawHandler) CreateAddress(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if req.SignType == "" {
-		req.SignType = "ecdsa"
+		req.SignType = defaultSignTypeForChain(req.Chain)
 	}
 	if req.Model == "" {
 		req.Model = strings.ToLower(strings.TrimSpace(meta.Model))
@@ -130,6 +130,15 @@ func (h *WithdrawHandler) CreateAddress(w http.ResponseWriter, r *http.Request) 
 		SignType:    req.SignType,
 		AddressType: req.AddressType,
 	})
+}
+
+func defaultSignTypeForChain(chain string) string {
+	switch strings.ToLower(strings.TrimSpace(chain)) {
+	case "sol", "solana", "apt", "aptos", "sui", "ton", "xlm", "stellar":
+		return "eddsa"
+	default:
+		return "ecdsa"
+	}
 }
 
 func (h *WithdrawHandler) findAccountAddress(ctx context.Context, tenantID, accountID, chain, network, coin string) (ports.WalletAddress, error) {

@@ -83,7 +83,11 @@ func (a *Adapter) SendTx(ctx context.Context, chain, network, coin, rawTx string
 	return plugin.SendTx(ctx, clients.NormalizeChain(chain), strings.ToLower(strings.TrimSpace(network)), coin, rawTx)
 }
 
-func (a *Adapter) BuildUnsignedAccount(context.Context, string, string, string) (string, error) {
+func (a *Adapter) BuildUnsignedAccount(context.Context, string, string, string) (ports.BuildUnsignedResult, error) {
+	return ports.BuildUnsignedResult{}, ports.ErrUnsupported
+}
+
+func (a *Adapter) BuildSignedAccount(context.Context, string, string, string, string, string) (string, error) {
 	return "", ports.ErrUnsupported
 }
 

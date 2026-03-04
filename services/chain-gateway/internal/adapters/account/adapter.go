@@ -83,12 +83,27 @@ func (a *Adapter) SendTx(ctx context.Context, chain, network, coin, rawTx string
 	return plugin.SendTx(ctx, clients.NormalizeChain(chain), strings.ToLower(strings.TrimSpace(network)), coin, rawTx)
 }
 
-func (a *Adapter) BuildUnsignedAccount(ctx context.Context, chain, network, base64Tx string) (string, error) {
+func (a *Adapter) BuildUnsignedAccount(ctx context.Context, chain, network, base64Tx string) (ports.BuildUnsignedResult, error) {
+	plugin, err := a.resolve(chain)
+	if err != nil {
+		return ports.BuildUnsignedResult{}, err
+	}
+	return plugin.BuildUnsignedAccount(ctx, clients.NormalizeChain(chain), strings.ToLower(strings.TrimSpace(network)), base64Tx)
+}
+
+func (a *Adapter) BuildSignedAccount(ctx context.Context, chain, network, base64Tx, signature, publicKey string) (string, error) {
 	plugin, err := a.resolve(chain)
 	if err != nil {
 		return "", err
 	}
-	return plugin.BuildUnsignedAccount(ctx, clients.NormalizeChain(chain), strings.ToLower(strings.TrimSpace(network)), base64Tx)
+	return plugin.BuildSignedAccount(
+		ctx,
+		clients.NormalizeChain(chain),
+		strings.ToLower(strings.TrimSpace(network)),
+		base64Tx,
+		signature,
+		publicKey,
+	)
 }
 
 func (a *Adapter) BuildUnsignedUTXO(context.Context, string, string, string, []ports.TxVin, []ports.TxVout) (ports.BuildUnsignedResult, error) {

@@ -34,7 +34,7 @@ func (o *WithdrawOrchestrator) CreateAndBroadcast(ctx context.Context, req Withd
 	if err != nil {
 		return "", err
 	}
-	signType := resolveSignType(req.SignType, unsignedResult.SignHashes)
+	signType := resolveSignType(req.SignType, req.Tx.Chain, unsignedResult.SignHashes)
 
 	if len(unsignedResult.SignHashes) == 0 {
 		txHash, err = o.signAndBroadcastRaw(ctx, req, signType, keys[0], unsignedResult)
@@ -48,7 +48,7 @@ func (o *WithdrawOrchestrator) CreateAndBroadcast(ctx context.Context, req Withd
 		return txHash, nil
 	}
 
-	signatures, publicKeys, err := o.buildSignatures(ctx, signType, keys, unsignedResult.SignHashes)
+	signatures, publicKeys, err := o.buildSignatures(ctx, signType, req.Tx.Chain, keys, unsignedResult.SignHashes)
 	if err != nil {
 		return "", err
 	}

@@ -18,6 +18,7 @@ require (
 	github.com/ethereum/go-ethereum v1.14.11
 	github.com/fbsobreira/gotron-sdk v0.0.0-20230907131216-1e824406fe8c
 	github.com/gagliardetto/solana-go v1.14.0
+	github.com/golang/protobuf v1.5.4
 	github.com/go-resty/resty/v2 v2.15.3
 	github.com/lib/pq v1.10.9
 	github.com/mr-tron/base58 v1.2.0

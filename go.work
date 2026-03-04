@@ -3,7 +3,8 @@ go 1.26.0
 use (
 	./services/api-gateway
 	./services/chain-gateway
-	./services/scan-service
+	./services/scan-account-service
+	./services/scan-utxo-service
 	./services/sign-service
 	./services/wallet-core
 )

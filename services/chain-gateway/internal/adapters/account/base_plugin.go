@@ -21,8 +21,12 @@ func (BasePlugin) SendTx(context.Context, string, string, string, string) (strin
 	return "", fmt.Errorf("%w: send tx", ports.ErrUnsupported)
 }
 
-func (BasePlugin) BuildUnsignedAccount(context.Context, string, string, string) (string, error) {
-	return "", fmt.Errorf("%w: build unsigned account", ports.ErrUnsupported)
+func (BasePlugin) BuildUnsignedAccount(context.Context, string, string, string) (ports.BuildUnsignedResult, error) {
+	return ports.BuildUnsignedResult{}, fmt.Errorf("%w: build unsigned account", ports.ErrUnsupported)
+}
+
+func (BasePlugin) BuildSignedAccount(context.Context, string, string, string, string, string) (string, error) {
+	return "", fmt.Errorf("%w: build signed account", ports.ErrUnsupported)
 }
 
 func (BasePlugin) SupportChains(context.Context, string, string) (bool, error) {

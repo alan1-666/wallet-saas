@@ -12,7 +12,8 @@ type ChainPlugin interface {
 	Chain() string
 	ConvertAddress(ctx context.Context, chain, network, addrType, publicKey string) (string, error)
 	SendTx(ctx context.Context, chain, network, coin, rawTx string) (string, error)
-	BuildUnsignedAccount(ctx context.Context, chain, network, base64Tx string) (string, error)
+	BuildUnsignedAccount(ctx context.Context, chain, network, base64Tx string) (ports.BuildUnsignedResult, error)
+	BuildSignedAccount(ctx context.Context, chain, network, base64Tx, signature, publicKey string) (string, error)
 	SupportChains(ctx context.Context, chain, network string) (bool, error)
 	ValidAddress(ctx context.Context, chain, network, format, address string) (bool, error)
 	GetFee(ctx context.Context, in ports.FeeInput) (ports.FeeResult, error)

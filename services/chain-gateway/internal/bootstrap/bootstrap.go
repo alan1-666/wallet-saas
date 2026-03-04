@@ -44,9 +44,11 @@ import (
 
 func Run() error {
 	cfg := config.Load()
+	var controlPlaneStore *controlplane.Postgres
 	var endpointManager *endpoint.Manager
 	if cfg.PostgresDSN != "" {
-		controlPlaneStore, err := controlplane.NewPostgres(cfg.PostgresDSN)
+		var err error
+		controlPlaneStore, err = controlplane.NewPostgres(cfg.PostgresDSN)
 		if err != nil {
 			return err
 		}
@@ -65,15 +67,16 @@ func Run() error {
 		log.Printf("chain-gateway control-plane disabled: CHAIN_GATEWAY_DB_DSN/WALLET_DB_DSN is empty")
 	}
 
+	accountSourceConfig := buildAccountSourceConfig()
+	applyAccountRPCFromDB(context.Background(), controlPlaneStore, accountSourceConfig)
 	evmReader := accountevm.NewRPCReader(endpointManager)
-	solReader := accountsol.NewRPCReader(endpointManager)
+	solReader := accountsol.NewRPCReader(endpointManager, accountSourceConfig.WalletNode.Sol.RpcUrl)
 
 	accountPlugins := make([]accountadapter.ChainPlugin, 0, len(evmAccountChains)+1)
 	for _, chain := range evmAccountChains {
 		accountPlugins = append(accountPlugins, accountevm.New(chain, evmReader))
 	}
-	accountPlugins = append(accountPlugins, accountsol.New(solReader))
-	accountSourceConfig := buildAccountSourceConfig()
+	accountPlugins = append(accountPlugins, accountsol.New(solReader, accountSourceConfig))
 	accountPlugins = append(accountPlugins,
 		accountaptos.New(accountSourceConfig),
 		accountcosmos.New(accountSourceConfig),
@@ -172,9 +175,24 @@ func buildAccountSourceConfig() *accountsourcecfg.Config {
 			"mainnet",
 		),
 		Chains: []string{
-			"aptos", "cosmos", "sui", "ton", "tron", "xlm", "btt",
+			"solana", "aptos", "cosmos", "sui", "ton", "tron", "xlm", "btt",
 		},
 		WalletNode: accountsourcecfg.WalletNode{
+			Sol: accountsourcecfg.Node{
+				RpcUrl: firstNonEmpty(
+					os.Getenv("CHAIN_GATEWAY_ACCOUNT_SOL_RPC_URL"),
+					os.Getenv("CHAIN_GATEWAY_SOL_RPC_URL"),
+					os.Getenv("SOLANA_RPC_URL"),
+				),
+				DataApiUrl: firstNonEmpty(
+					os.Getenv("CHAIN_GATEWAY_ACCOUNT_SOL_DATA_API_URL"),
+					os.Getenv("CHAIN_GATEWAY_SOL_DATA_API_URL"),
+				),
+				DataApiKey: firstNonEmpty(
+					os.Getenv("CHAIN_GATEWAY_ACCOUNT_SOL_DATA_API_KEY"),
+					os.Getenv("CHAIN_GATEWAY_SOL_DATA_API_KEY"),
+				),
+			},
 			Cosmos: accountsourcecfg.Node{
 				RpcUrl: firstNonEmpty(
 					os.Getenv("CHAIN_GATEWAY_ACCOUNT_COSMOS_RPC_URL"),
@@ -292,4 +310,58 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func applyAccountRPCFromDB(ctx context.Context, store controlplane.RPCEndpointStore, cfg *accountsourcecfg.Config) {
+	if store == nil || cfg == nil {
+		return
+	}
+	items, err := store.ListActiveRPCEndpoints(ctx)
+	if err != nil {
+		log.Printf("chain-gateway load account rpc from db failed: %v", err)
+		return
+	}
+
+	targetNetwork := strings.ToLower(strings.TrimSpace(cfg.NetWork))
+	loaded := make(map[string]bool)
+	for _, item := range items {
+		if strings.ToLower(strings.TrimSpace(item.Model)) != string(ports.ModelAccount) {
+			continue
+		}
+		if targetNetwork != "" && strings.ToLower(strings.TrimSpace(item.Network)) != targetNetwork {
+			continue
+		}
+
+		chain := clients.NormalizeChain(item.Chain)
+		url := strings.TrimSpace(item.URL)
+		if chain == "" || url == "" || loaded[chain] {
+			continue
+		}
+
+		switch chain {
+		case "solana":
+			cfg.WalletNode.Sol.RpcUrl = url
+		case "cosmos":
+			cfg.WalletNode.Cosmos.RpcUrl = url
+		case "tron":
+			cfg.WalletNode.Tron.RpcUrl = url
+		case "aptos":
+			cfg.WalletNode.Aptos.RpcUrl = url
+		case "sui":
+			cfg.WalletNode.Sui.RpcUrl = url
+		case "ton":
+			cfg.WalletNode.Ton.RpcUrl = url
+		case "xlm":
+			cfg.WalletNode.Xlm.RpcUrl = url
+		case "btt":
+			cfg.WalletNode.Btt.RpcUrl = url
+		default:
+			continue
+		}
+		loaded[chain] = true
+	}
+
+	if len(loaded) > 0 {
+		log.Printf("chain-gateway loaded account rpc from db network=%s chains=%d", targetNetwork, len(loaded))
+	}
 }
