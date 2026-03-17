@@ -36,6 +36,7 @@ type PendingWithdraw struct {
 	TxHash        string
 	Confirmations int64
 	RequiredConfs int64
+	BroadcastedAt time.Time
 }
 
 type PendingSweep struct {
@@ -46,6 +47,7 @@ type PendingSweep struct {
 	TxHash        string
 	Confirmations int64
 	RequiredConfs int64
+	BroadcastedAt time.Time
 }
 
 type SeenEventChange struct {
@@ -88,6 +90,11 @@ type OutboxEvent struct {
 	Payload     string
 	Attempt     int
 	MaxAttempts int
+}
+
+type OutgoingNotFoundState struct {
+	NotFoundCount   int64
+	FirstNotFoundAt time.Time
 }
 
 func NewPostgres(dsn string) (*Postgres, error) {
@@ -161,6 +168,35 @@ LIMIT $2
 		return nil, err
 	}
 	return out, nil
+}
+
+func (p *Postgres) ListManagedAddresses(ctx context.Context, model, chain, network string) (map[string]struct{}, error) {
+	rows, err := p.db.QueryContext(ctx, `
+SELECT DISTINCT LOWER(address)
+FROM scan_watch_addresses
+WHERE active = TRUE
+  AND model = $1
+  AND LOWER(chain) = LOWER($2)
+  AND LOWER(network) = LOWER($3)
+`, strings.ToLower(strings.TrimSpace(model)), strings.TrimSpace(chain), strings.TrimSpace(network))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]struct{})
+	for rows.Next() {
+		var addr string
+		if err := rows.Scan(&addr); err != nil {
+			return nil, err
+		}
+		addr = strings.ToLower(strings.TrimSpace(addr))
+		if addr == "" {
+			continue
+		}
+		out[addr] = struct{}{}
+	}
+	return out, rows.Err()
 }
 
 func (p *Postgres) GetCheckpoint(ctx context.Context, w WatchAddress) (string, error) {
@@ -520,7 +556,7 @@ WHERE id=$5
 
 func (p *Postgres) ListPendingWithdraws(ctx context.Context, limit int) ([]PendingWithdraw, error) {
 	rows, err := p.db.QueryContext(ctx, `
-SELECT tenant_id, order_id, chain, network, tx_hash, confirmations, required_confirmations
+SELECT tenant_id, order_id, chain, network, tx_hash, confirmations, required_confirmations, updated_at
 FROM ledger_freezes
 WHERE status='BROADCASTED'
   AND tx_hash <> ''
@@ -534,7 +570,7 @@ LIMIT $1
 	out := make([]PendingWithdraw, 0, limit)
 	for rows.Next() {
 		var it PendingWithdraw
-		if err := rows.Scan(&it.TenantID, &it.OrderID, &it.Chain, &it.Network, &it.TxHash, &it.Confirmations, &it.RequiredConfs); err != nil {
+		if err := rows.Scan(&it.TenantID, &it.OrderID, &it.Chain, &it.Network, &it.TxHash, &it.Confirmations, &it.RequiredConfs, &it.BroadcastedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, it)
@@ -544,7 +580,7 @@ LIMIT $1
 
 func (p *Postgres) ListPendingSweeps(ctx context.Context, limit int) ([]PendingSweep, error) {
 	rows, err := p.db.QueryContext(ctx, `
-SELECT tenant_id, sweep_order_id, chain, network, tx_hash, confirmations, required_confirmations
+SELECT tenant_id, sweep_order_id, chain, network, tx_hash, confirmations, required_confirmations, updated_at
 FROM sweep_orders
 WHERE status='BROADCASTED'
   AND tx_hash <> ''
@@ -558,12 +594,41 @@ LIMIT $1
 	out := make([]PendingSweep, 0, limit)
 	for rows.Next() {
 		var it PendingSweep
-		if err := rows.Scan(&it.TenantID, &it.SweepOrderID, &it.Chain, &it.Network, &it.TxHash, &it.Confirmations, &it.RequiredConfs); err != nil {
+		if err := rows.Scan(&it.TenantID, &it.SweepOrderID, &it.Chain, &it.Network, &it.TxHash, &it.Confirmations, &it.RequiredConfs, &it.BroadcastedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, it)
 	}
 	return out, rows.Err()
+}
+
+func (p *Postgres) IncrementOutgoingNotFound(ctx context.Context, kind, tenantID, orderID, chain, network, txHash string) (OutgoingNotFoundState, error) {
+	var out OutgoingNotFoundState
+	err := p.db.QueryRowContext(ctx, `
+INSERT INTO scan_outgoing_watch (kind, tenant_id, order_id, chain, network, tx_hash, not_found_count, first_not_found_at, last_not_found_at, updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,1,NOW(),NOW(),NOW())
+ON CONFLICT (kind, tenant_id, order_id)
+DO UPDATE SET
+  chain = EXCLUDED.chain,
+  network = EXCLUDED.network,
+  tx_hash = EXCLUDED.tx_hash,
+  not_found_count = scan_outgoing_watch.not_found_count + 1,
+  last_not_found_at = NOW(),
+  updated_at = NOW()
+RETURNING not_found_count, first_not_found_at
+`, strings.ToLower(strings.TrimSpace(kind)), tenantID, orderID, strings.ToLower(strings.TrimSpace(chain)), strings.ToLower(strings.TrimSpace(network)), strings.TrimSpace(txHash)).Scan(&out.NotFoundCount, &out.FirstNotFoundAt)
+	if err != nil {
+		return OutgoingNotFoundState{}, err
+	}
+	return out, nil
+}
+
+func (p *Postgres) ClearOutgoingNotFound(ctx context.Context, kind, tenantID, orderID string) error {
+	_, err := p.db.ExecContext(ctx, `
+DELETE FROM scan_outgoing_watch
+WHERE kind=$1 AND tenant_id=$2 AND order_id=$3
+`, strings.ToLower(strings.TrimSpace(kind)), tenantID, orderID)
+	return err
 }
 
 func (p *Postgres) initSchema(ctx context.Context) error {
@@ -646,6 +711,20 @@ func (p *Postgres) initSchema(ctx context.Context) error {
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )`,
+		`CREATE TABLE IF NOT EXISTS scan_outgoing_watch (
+  kind TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  order_id TEXT NOT NULL,
+  chain TEXT NOT NULL,
+  network TEXT NOT NULL,
+  tx_hash TEXT NOT NULL DEFAULT '',
+  not_found_count BIGINT NOT NULL DEFAULT 0,
+  first_not_found_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_not_found_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (kind, tenant_id, order_id)
+)`,
 	}
 
 	for _, stmt := range createStmts {
@@ -696,6 +775,10 @@ WHERE network = '' OR network IS NULL`)
 	_, err = p.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_scan_seen_reorg ON scan_seen_events (status, updated_at, chain, network)`)
 	if err != nil {
 		return fmt.Errorf("create reorg index failed: %w", err)
+	}
+	_, err = p.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_scan_outgoing_watch_tx ON scan_outgoing_watch (chain, network, tx_hash, updated_at)`)
+	if err != nil {
+		return fmt.Errorf("create outgoing watch index failed: %w", err)
 	}
 	return nil
 }

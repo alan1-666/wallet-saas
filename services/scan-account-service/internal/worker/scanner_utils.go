@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"time"
 )
 
 func depositOrderID(txHash string, eventIndex int64, accountID, network string) string {
@@ -80,4 +81,41 @@ func resolveDepositStatus(rawStatus string, confirmations, minConf int64) string
 		return "PENDING"
 	}
 	return "CONFIRMED"
+}
+
+func isSolanaChain(chain string) bool {
+	switch strings.ToLower(strings.TrimSpace(chain)) {
+	case "sol", "solana":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldSkipInternalTransfer(fromAddr string, managedAddrs map[string]struct{}) bool {
+	if len(managedAddrs) == 0 {
+		return false
+	}
+	key := strings.ToLower(strings.TrimSpace(fromAddr))
+	if key == "" {
+		return false
+	}
+	_, ok := managedAddrs[key]
+	return ok
+}
+
+func shouldFailOutgoingNotFound(chain string, age time.Duration, missCount, threshold int64, grace time.Duration) bool {
+	if !isSolanaChain(chain) {
+		return false
+	}
+	if threshold <= 0 {
+		threshold = 1
+	}
+	if grace < 0 {
+		grace = 0
+	}
+	if missCount < threshold {
+		return false
+	}
+	return age >= grace
 }

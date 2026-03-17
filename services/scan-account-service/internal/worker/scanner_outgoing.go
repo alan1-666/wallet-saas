@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"wallet-saas-v2/services/scan-account-service/internal/client"
 )
@@ -20,9 +21,16 @@ func (s *Scanner) scanOutgoingConfirmations(ctx context.Context) error {
 			continue
 		}
 		finality, err := s.ChainGateway.TxFinality(ctx, it.Chain, "", it.Network, it.TxHash)
-		if err != nil || !finality.Found {
+		if err != nil {
 			continue
 		}
+		if !finality.Found {
+			if err := s.handleMissingOutgoingTx(ctx, outgoingKindWithdraw, it.TenantID, it.OrderID, it.Chain, it.Network, it.TxHash, it.RequiredConfs, it.BroadcastedAt, false); err != nil {
+				log.Printf("withdraw missing tx handling failed tenant=%s order=%s tx=%s err=%v", it.TenantID, it.OrderID, it.TxHash, err)
+			}
+			continue
+		}
+		_ = s.Store.ClearOutgoingNotFound(ctx, outgoingKindWithdraw, it.TenantID, it.OrderID)
 		status := "CONFIRMED"
 		reason := ""
 		switch strings.ToUpper(strings.TrimSpace(finality.Status)) {
@@ -60,9 +68,16 @@ func (s *Scanner) scanOutgoingConfirmations(ctx context.Context) error {
 			continue
 		}
 		finality, err := s.ChainGateway.TxFinality(ctx, it.Chain, "", it.Network, it.TxHash)
-		if err != nil || !finality.Found {
+		if err != nil {
 			continue
 		}
+		if !finality.Found {
+			if err := s.handleMissingOutgoingTx(ctx, outgoingKindSweep, it.TenantID, it.SweepOrderID, it.Chain, it.Network, it.TxHash, it.RequiredConfs, it.BroadcastedAt, true); err != nil {
+				log.Printf("sweep missing tx handling failed tenant=%s order=%s tx=%s err=%v", it.TenantID, it.SweepOrderID, it.TxHash, err)
+			}
+			continue
+		}
+		_ = s.Store.ClearOutgoingNotFound(ctx, outgoingKindSweep, it.TenantID, it.SweepOrderID)
 		status := "CONFIRMED"
 		reason := ""
 		switch strings.ToUpper(strings.TrimSpace(finality.Status)) {
@@ -90,4 +105,52 @@ func (s *Scanner) scanOutgoingConfirmations(ctx context.Context) error {
 		log.Printf("sweep onchain notified tenant=%s order=%s tx=%s status=%s conf=%d", it.TenantID, it.SweepOrderID, it.TxHash, status, finality.Confirmations)
 	}
 	return nil
+}
+
+const (
+	outgoingKindWithdraw = "withdraw"
+	outgoingKindSweep    = "sweep"
+)
+
+func (s *Scanner) handleMissingOutgoingTx(ctx context.Context, kind, tenantID, orderID, chain, network, txHash string, requiredConfs int64, broadcastedAt time.Time, sweep bool) error {
+	state, err := s.Store.IncrementOutgoingNotFound(ctx, kind, tenantID, orderID, chain, network, txHash)
+	if err != nil {
+		return err
+	}
+	age := time.Since(broadcastedAt)
+	log.Printf("outgoing tx not found kind=%s tenant=%s order=%s chain=%s network=%s tx=%s miss=%d age=%s threshold=%d grace=%s",
+		kind, tenantID, orderID, chain, network, txHash, state.NotFoundCount, age.Round(time.Second), s.OutgoingNotFoundThreshold, s.OutgoingNotFoundGrace)
+	if !shouldFailOutgoingNotFound(chain, age, state.NotFoundCount, s.OutgoingNotFoundThreshold, s.OutgoingNotFoundGrace) {
+		return nil
+	}
+	reason := fmt.Sprintf("onchain tx not found after %d checks and %s since broadcast", state.NotFoundCount, age.Round(time.Second))
+	reqID := fmt.Sprintf("scan-%s-notfound-%s-%s-%d", kind, tenantID, orderID, state.NotFoundCount)
+	if sweep {
+		if err := s.WalletCore.SweepOnchainNotify(ctx, reqID, client.SweepOnchainNotifyRequest{
+			TenantID:      tenantID,
+			SweepOrderID:  orderID,
+			TxHash:        txHash,
+			Status:        "FAILED",
+			Reason:        reason,
+			Confirmations: 0,
+			RequiredConfs: max(requiredConfs, 1),
+		}); err != nil {
+			return err
+		}
+		log.Printf("sweep onchain notified tenant=%s order=%s tx=%s status=FAILED reason=%s", tenantID, orderID, txHash, reason)
+	} else {
+		if err := s.WalletCore.WithdrawOnchainNotify(ctx, reqID, client.WithdrawOnchainNotifyRequest{
+			TenantID:      tenantID,
+			OrderID:       orderID,
+			TxHash:        txHash,
+			Status:        "FAILED",
+			Reason:        reason,
+			Confirmations: 0,
+			RequiredConfs: max(requiredConfs, 1),
+		}); err != nil {
+			return err
+		}
+		log.Printf("withdraw onchain notified tenant=%s order=%s tx=%s status=FAILED reason=%s", tenantID, orderID, txHash, reason)
+	}
+	return s.Store.ClearOutgoingNotFound(ctx, kind, tenantID, orderID)
 }

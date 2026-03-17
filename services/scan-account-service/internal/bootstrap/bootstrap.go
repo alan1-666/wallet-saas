@@ -74,33 +74,35 @@ func runWithMode(mode string) error {
 	}
 
 	scanner := &worker.Scanner{
-		Store:                  st,
-		WalletCore:             wc,
-		ChainGateway:           cg,
-		ProjectNotify:          projectNotify,
-		Interval:               time.Duration(cfg.IntervalSeconds) * time.Second,
-		AccountPageSize:        cfg.AccountPageSize,
-		AccountMaxPages:        cfg.AccountMaxPages,
-		WatchLimit:             cfg.WatchLimit,
-		AddrConcurrency:        cfg.AddrConcurrency,
-		ReorgWindow:            int64(cfg.ReorgWindow),
-		ReorgCandidateLimit:    cfg.ReorgCandidateLimit,
-		ReorgNotFoundThreshold: int64(cfg.ReorgNotFoundThreshold),
-		EnableAccountScan:      enableAccountScan,
-		EnableUTXOScan:         enableUTXOScan,
-		EnableReorgReconcile:   enableReorg,
-		EnableOutboxDispatch:   enableOutbox,
-		EnableOutgoingScan:     enableOutgoing,
-		SweepMinBalance:        cfg.SweepMinBalance,
-		ProjectChainIDMap:      cfg.ProjectNotifyChainMap,
-		ProjectDefaultChainID:  cfg.ProjectNotifyDefaultID,
+		Store:                     st,
+		WalletCore:                wc,
+		ChainGateway:              cg,
+		ProjectNotify:             projectNotify,
+		Interval:                  time.Duration(cfg.IntervalSeconds) * time.Second,
+		AccountPageSize:           cfg.AccountPageSize,
+		AccountMaxPages:           cfg.AccountMaxPages,
+		WatchLimit:                cfg.WatchLimit,
+		AddrConcurrency:           cfg.AddrConcurrency,
+		ReorgWindow:               int64(cfg.ReorgWindow),
+		ReorgCandidateLimit:       cfg.ReorgCandidateLimit,
+		ReorgNotFoundThreshold:    int64(cfg.ReorgNotFoundThreshold),
+		OutgoingNotFoundThreshold: int64(cfg.OutgoingNotFoundThreshold),
+		OutgoingNotFoundGrace:     time.Duration(cfg.OutgoingNotFoundGraceSeconds) * time.Second,
+		EnableAccountScan:         enableAccountScan,
+		EnableUTXOScan:            enableUTXOScan,
+		EnableReorgReconcile:      enableReorg,
+		EnableOutboxDispatch:      enableOutbox,
+		EnableOutgoingScan:        enableOutgoing,
+		SweepMinBalance:           cfg.SweepMinBalance,
+		ProjectChainIDMap:         cfg.ProjectNotifyChainMap,
+		ProjectDefaultChainID:     cfg.ProjectNotifyDefaultID,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	log.Printf("service=scan-account-service mode=%s wallet-core=%s chain-gateway-grpc=%s project-notify=%s interval=%ds addr-concurrency=%d sweep-min-balance=%s reorg-window=%d reorg-candidate-limit=%d reorg-not-found-threshold=%d",
-		mode, cfg.WalletCoreAddr, cfg.ChainGatewayGRPCAddr, cfg.ProjectNotifyBaseURL, cfg.IntervalSeconds, cfg.AddrConcurrency, cfg.SweepMinBalance, cfg.ReorgWindow, cfg.ReorgCandidateLimit, cfg.ReorgNotFoundThreshold)
+	log.Printf("service=scan-account-service mode=%s wallet-core=%s chain-gateway-grpc=%s project-notify=%s interval=%ds addr-concurrency=%d sweep-min-balance=%s reorg-window=%d reorg-candidate-limit=%d reorg-not-found-threshold=%d outgoing-not-found-threshold=%d outgoing-not-found-grace=%ds",
+		mode, cfg.WalletCoreAddr, cfg.ChainGatewayGRPCAddr, cfg.ProjectNotifyBaseURL, cfg.IntervalSeconds, cfg.AddrConcurrency, cfg.SweepMinBalance, cfg.ReorgWindow, cfg.ReorgCandidateLimit, cfg.ReorgNotFoundThreshold, cfg.OutgoingNotFoundThreshold, cfg.OutgoingNotFoundGraceSeconds)
 	err = scanner.Run(ctx)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		return err

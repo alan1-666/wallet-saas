@@ -73,7 +73,13 @@ func (s *Scanner) scanAccountModel(ctx context.Context, watches []store.WatchAdd
 				}
 				return
 			}
-			s.scanWatchesIndividually(ctx, "account", group.Watches)
+			managedAddrs, err := s.Store.ListManagedAddresses(ctx, group.Model, group.Chain, group.Network)
+			if err != nil {
+				log.Printf("managed address preload failed chain=%s network=%s coin=%s watches=%d err=%v",
+					group.Chain, group.Network, group.Coin, len(group.Watches), err)
+				return
+			}
+			s.scanWatchesIndividuallyWithManaged(ctx, "account", group.Watches, managedAddrs)
 		}()
 	}
 	wg.Wait()
@@ -81,6 +87,10 @@ func (s *Scanner) scanAccountModel(ctx context.Context, watches []store.WatchAdd
 }
 
 func (s *Scanner) scanWatchesIndividually(ctx context.Context, model string, watches []store.WatchAddress) {
+	s.scanWatchesIndividuallyWithManaged(ctx, model, watches, nil)
+}
+
+func (s *Scanner) scanWatchesIndividuallyWithManaged(ctx context.Context, model string, watches []store.WatchAddress, managedAddrs map[string]struct{}) {
 	sem := make(chan struct{}, s.AddrConcurrency)
 	var wg sync.WaitGroup
 	for _, w := range watches {
@@ -90,7 +100,7 @@ func (s *Scanner) scanWatchesIndividually(ctx context.Context, model string, wat
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if err := s.scanOneWatch(ctx, watch); err != nil {
+			if err := s.scanOneWatch(ctx, watch, managedAddrs); err != nil {
 				log.Printf("%s scan failed chain=%s coin=%s addr=%s err=%v", model, watch.Chain, watch.Coin, watch.Address, err)
 			}
 		}()
@@ -125,6 +135,10 @@ func (s *Scanner) scanOneAccountGroup(ctx context.Context, group *watchGroup) er
 	if len(watchByAddr) == 0 {
 		return nil
 	}
+	managedAddrs, err := s.Store.ListManagedAddresses(ctx, group.Model, group.Chain, group.Network)
+	if err != nil {
+		return err
+	}
 
 	maxPages := s.AccountMaxPages
 	if maxPages <= 0 {
@@ -152,6 +166,11 @@ func (s *Scanner) scanOneAccountGroup(ctx context.Context, group *watchGroup) er
 		}
 
 		for idx, tx := range txs {
+			if shouldSkipInternalTransfer(tx.FromAddress, managedAddrs) {
+				log.Printf("skip internal transfer tenant_scope=platform chain=%s network=%s tx=%s from=%s to=%s amount=%s",
+					group.Chain, group.Network, tx.TxHash, tx.FromAddress, tx.ToAddress, tx.Amount)
+				continue
+			}
 			toAddr := strings.ToLower(strings.TrimSpace(tx.ToAddress))
 			if toAddr == "" {
 				continue
@@ -211,7 +230,7 @@ func (s *Scanner) scanOneAccountGroup(ctx context.Context, group *watchGroup) er
 	return nil
 }
 
-func (s *Scanner) scanOneWatch(ctx context.Context, w store.WatchAddress) error {
+func (s *Scanner) scanOneWatch(ctx context.Context, w store.WatchAddress, managedAddrs map[string]struct{}) error {
 	if strings.TrimSpace(w.Network) == "" {
 		return fmt.Errorf("watch network is required tenant=%s account=%s chain=%s address=%s", w.TenantID, w.AccountID, w.Chain, w.Address)
 	}
@@ -220,6 +239,12 @@ func (s *Scanner) scanOneWatch(ctx context.Context, w store.WatchAddress) error 
 		return err
 	}
 	lastTx := ""
+	if managedAddrs == nil {
+		managedAddrs, err = s.Store.ListManagedAddresses(ctx, w.Model, w.Chain, w.Network)
+		if err != nil {
+			return err
+		}
+	}
 	maxPages := s.AccountMaxPages
 	if strings.EqualFold(strings.TrimSpace(w.Model), "utxo") {
 		maxPages = 1
@@ -230,6 +255,11 @@ func (s *Scanner) scanOneWatch(ctx context.Context, w store.WatchAddress) error 
 			return err
 		}
 		for idx, tx := range txs {
+			if shouldSkipInternalTransfer(tx.FromAddress, managedAddrs) {
+				log.Printf("skip internal transfer tenant=%s account=%s chain=%s network=%s tx=%s from=%s to=%s amount=%s",
+					w.TenantID, w.AccountID, w.Chain, w.Network, tx.TxHash, tx.FromAddress, tx.ToAddress, tx.Amount)
+				continue
+			}
 			minConf := w.MinConfirmations
 			if minConf <= 0 {
 				minConf = 1

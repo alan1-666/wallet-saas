@@ -10,26 +10,28 @@ import (
 )
 
 type Scanner struct {
-	Store                  *store.Postgres
-	WalletCore             *client.WalletCore
-	ChainGateway           *client.ChainGateway
-	ProjectNotify          *client.ProjectNotify
-	Interval               time.Duration
-	AccountPageSize        int
-	AccountMaxPages        int
-	WatchLimit             int
-	AddrConcurrency        int
-	ReorgWindow            int64
-	ReorgCandidateLimit    int
-	ReorgNotFoundThreshold int64
-	EnableAccountScan      bool
-	EnableUTXOScan         bool
-	EnableReorgReconcile   bool
-	EnableOutboxDispatch   bool
-	EnableOutgoingScan     bool
-	SweepMinBalance        string
-	ProjectChainIDMap      map[string]int64
-	ProjectDefaultChainID  int64
+	Store                     *store.Postgres
+	WalletCore                *client.WalletCore
+	ChainGateway              *client.ChainGateway
+	ProjectNotify             *client.ProjectNotify
+	Interval                  time.Duration
+	AccountPageSize           int
+	AccountMaxPages           int
+	WatchLimit                int
+	AddrConcurrency           int
+	ReorgWindow               int64
+	ReorgCandidateLimit       int
+	ReorgNotFoundThreshold    int64
+	OutgoingNotFoundThreshold int64
+	OutgoingNotFoundGrace     time.Duration
+	EnableAccountScan         bool
+	EnableUTXOScan            bool
+	EnableReorgReconcile      bool
+	EnableOutboxDispatch      bool
+	EnableOutgoingScan        bool
+	SweepMinBalance           string
+	ProjectChainIDMap         map[string]int64
+	ProjectDefaultChainID     int64
 }
 
 func (s *Scanner) Run(ctx context.Context) error {
@@ -56,6 +58,12 @@ func (s *Scanner) Run(ctx context.Context) error {
 	}
 	if s.ReorgNotFoundThreshold <= 0 {
 		s.ReorgNotFoundThreshold = 3
+	}
+	if s.OutgoingNotFoundThreshold <= 0 {
+		s.OutgoingNotFoundThreshold = 3
+	}
+	if s.OutgoingNotFoundGrace <= 0 {
+		s.OutgoingNotFoundGrace = 45 * time.Second
 	}
 	ticker := time.NewTicker(s.Interval)
 	defer ticker.Stop()
