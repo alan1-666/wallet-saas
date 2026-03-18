@@ -65,7 +65,7 @@ func (p *Plugin) ValidAddress(_ context.Context, chain, _network, _format, addre
 	return gethcommon.IsHexAddress(strings.TrimSpace(address)), nil
 }
 
-func (p *Plugin) BuildUnsignedAccount(_ context.Context, chain, _network, base64Tx string) (ports.BuildUnsignedResult, error) {
+func (p *Plugin) BuildUnsignedAccount(ctx context.Context, chain, network, base64Tx string) (ports.BuildUnsignedResult, error) {
 	if !clients.IsEVMChain(chain) {
 		return ports.BuildUnsignedResult{}, fmt.Errorf("unsupported chain: %s", chain)
 	}
@@ -74,17 +74,24 @@ func (p *Plugin) BuildUnsignedAccount(_ context.Context, chain, _network, base64
 	if err != nil {
 		return ports.BuildUnsignedResult{}, fmt.Errorf("invalid base64_tx: %w", err)
 	}
-	dynamicTx, err := decodeDynamicFeeTx(raw)
+	dynamicTx, req, err := decodeDynamicFeeTx(raw)
 	if err != nil {
 		return ports.BuildUnsignedResult{}, err
+	}
+	if strings.TrimSpace(req.FromAddress) != "" {
+		nonce, err := p.fetchPendingNonce(ctx, chain, network, req.FromAddress)
+		if err != nil {
+			return ports.BuildUnsignedResult{}, fmt.Errorf("resolve nonce failed: %w", err)
+		}
+		dynamicTx.Nonce = nonce
+		if refreshed, err := encodeDynamicFeeTx(req, nonce); err == nil {
+			payload = refreshed
+		}
 	}
 	tx := types.NewTx(dynamicTx)
 	signer := types.LatestSignerForChainID(dynamicTx.ChainID)
 	hash := signer.Hash(tx)
-	return ports.BuildUnsignedResult{
-		UnsignedTx: payload,
-		SignHashes: []string{hash.Hex()},
-	}, nil
+	return ports.BuildUnsignedResult{UnsignedTx: payload, SignHashes: []string{hash.Hex()}}, nil
 }
 
 func (p *Plugin) BuildSignedAccount(_ context.Context, chain, _network, base64Tx, signature, publicKey string) (string, error) {
@@ -95,7 +102,7 @@ func (p *Plugin) BuildSignedAccount(_ context.Context, chain, _network, base64Tx
 	if err != nil {
 		return "", fmt.Errorf("invalid base64_tx: %w", err)
 	}
-	dynamicTx, err := decodeDynamicFeeTx(raw)
+	dynamicTx, _, err := decodeDynamicFeeTx(raw)
 	if err != nil {
 		return "", err
 	}
@@ -314,6 +321,7 @@ func matchesSignerPublicKey(tx *types.Transaction, signer types.Signer, sig []by
 
 type evmDynamicFeeRequest struct {
 	ChainID              string `json:"chainId"`
+	FromAddress          string `json:"fromAddress,omitempty"`
 	Nonce                uint64 `json:"nonce"`
 	MaxPriorityFeePerGas string `json:"maxPriorityFeePerGas"`
 	MaxFeePerGas         string `json:"maxFeePerGas"`
@@ -323,26 +331,26 @@ type evmDynamicFeeRequest struct {
 	ContractAddress      string `json:"contractAddress"`
 }
 
-func decodeDynamicFeeTx(raw []byte) (*types.DynamicFeeTx, error) {
+func decodeDynamicFeeTx(raw []byte) (*types.DynamicFeeTx, evmDynamicFeeRequest, error) {
 	var req evmDynamicFeeRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
-		return nil, fmt.Errorf("invalid dynamic fee tx json: %w", err)
+		return nil, req, fmt.Errorf("invalid dynamic fee tx json: %w", err)
 	}
 	chainID, ok := new(big.Int).SetString(strings.TrimSpace(req.ChainID), 10)
 	if !ok {
-		return nil, fmt.Errorf("invalid chainId")
+		return nil, req, fmt.Errorf("invalid chainId")
 	}
 	maxPriorityFee, ok := new(big.Int).SetString(strings.TrimSpace(req.MaxPriorityFeePerGas), 10)
 	if !ok {
-		return nil, fmt.Errorf("invalid maxPriorityFeePerGas")
+		return nil, req, fmt.Errorf("invalid maxPriorityFeePerGas")
 	}
 	maxFee, ok := new(big.Int).SetString(strings.TrimSpace(req.MaxFeePerGas), 10)
 	if !ok {
-		return nil, fmt.Errorf("invalid maxFeePerGas")
+		return nil, req, fmt.Errorf("invalid maxFeePerGas")
 	}
 	amount, ok := new(big.Int).SetString(strings.TrimSpace(req.Amount), 10)
 	if !ok {
-		return nil, fmt.Errorf("invalid amount")
+		return nil, req, fmt.Errorf("invalid amount")
 	}
 	toAddress := gethcommon.HexToAddress(strings.TrimSpace(req.ToAddress))
 	contractAddress := strings.ToLower(strings.TrimSpace(req.ContractAddress))
@@ -367,7 +375,34 @@ func decodeDynamicFeeTx(raw []byte) (*types.DynamicFeeTx, error) {
 		To:        &txTo,
 		Value:     txValue,
 		Data:      txData,
-	}, nil
+	}, req, nil
+}
+
+func encodeDynamicFeeTx(req evmDynamicFeeRequest, nonce uint64) (string, error) {
+	req.Nonce = nonce
+	raw, err := json.Marshal(req)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(raw), nil
+}
+
+func (p *Plugin) fetchPendingNonce(ctx context.Context, chain, network, fromAddress string) (uint64, error) {
+	ep, err := p.selectEndpoint(chain, network)
+	if err != nil {
+		return 0, err
+	}
+	var out string
+	if err := p.callRPC(ctx, ep, "eth_getTransactionCount", []any{fromAddress, "pending"}, &out); err != nil {
+		if p.Reader != nil {
+			p.Reader.ReportFailure(ep.Key, err)
+		}
+		return 0, err
+	}
+	if p.Reader != nil {
+		p.Reader.ReportSuccess(ep.Key)
+	}
+	return hexToUint64(out)
 }
 
 func buildERC20TransferData(toAddress gethcommon.Address, amount *big.Int) []byte {

@@ -80,6 +80,7 @@ type accountTxPayload struct {
 
 type evmDynamicFeePayload struct {
 	ChainID              string `json:"chainId"`
+	FromAddress          string `json:"fromAddress,omitempty"`
 	Nonce                uint64 `json:"nonce"`
 	MaxPriorityFeePerGas string `json:"maxPriorityFeePerGas"`
 	MaxFeePerGas         string `json:"maxFeePerGas"`
@@ -110,6 +111,7 @@ func buildBase64Tx(params ports.BuildUnsignedParams) (string, error) {
 		}
 		payload := evmDynamicFeePayload{
 			ChainID:              chainID,
+			FromAddress:          strings.TrimSpace(params.From),
 			Nonce:                0,
 			MaxPriorityFeePerGas: "1000000000",  // 1 gwei
 			MaxFeePerGas:         "20000000000", // 20 gwei
