@@ -6,6 +6,9 @@ import (
 )
 
 func (o *WithdrawOrchestrator) checkRisk(ctx context.Context, req WithdrawRequest) error {
+	if req.SkipRisk {
+		return nil
+	}
 	decision, err := o.Risk.CheckWithdraw(ctx, req.TenantID, req.AccountID, req.OrderID, req.Tx.Chain, req.Tx.Coin, req.Tx.Amount)
 	if err != nil {
 		return err

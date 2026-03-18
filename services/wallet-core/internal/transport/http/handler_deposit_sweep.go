@@ -111,6 +111,7 @@ func (h *WithdrawHandler) SweepRun(w http.ResponseWriter, r *http.Request) {
 		AccountID:     req.FromAccountID,
 		OrderID:       req.SweepOrderID,
 		RequiredConfs: requiredConfs,
+		SkipRisk:      true, // internal fund consolidation, risk is handled at deposit/withdraw boundaries
 		Signers: []ports.SignerRef{{
 			KeyID:     fromAddr.KeyID,
 			PublicKey: fromAddr.PublicKey,

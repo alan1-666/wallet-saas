@@ -17,4 +17,5 @@ type WithdrawRequest struct {
 	Signers       []ports.SignerRef
 	SignType      string
 	Tx            ports.BuildUnsignedParams
+	SkipRisk      bool
 }
