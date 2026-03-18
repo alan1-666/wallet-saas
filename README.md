@@ -29,6 +29,11 @@ See: `docs/TESTNET_6CHAINS_RUNBOOK.md`
 - Chains: ethereum(sepolia), binance(testnet), polygon(amoy), arbitrum(sepolia), solana(devnet), tron(nile)
 - Flows: HD address create, deposit credit, withdraw, sweep
 
+Quick files:
+- env template: `deploy/.env.testnet.example`
+- rpc seed: `deploy/seed_rpc_testnet.sql`
+- e2e helper: `scripts/e2e_testnet_6chains.sh`
+
 ## Production Docker deployment
 Use the production compose file with multi-stage Docker builds:
 
