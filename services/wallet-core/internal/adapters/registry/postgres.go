@@ -650,15 +650,20 @@ func (r *PostgresRegistry) seedChainMetadata(ctx context.Context) error {
 ('ethereum','mainnet','account','ETH',12,TRUE),
 ('ethereum','sepolia','account','ETH',1,TRUE),
 ('binance','mainnet','account','BNB',12,TRUE),
+('binance','testnet','account','BNB',1,TRUE),
 ('polygon','mainnet','account','MATIC',64,TRUE),
+('polygon','amoy','account','MATIC',1,TRUE),
 ('arbitrum','mainnet','account','ETH',12,TRUE),
+('arbitrum','sepolia','account','ETH',1,TRUE),
 ('optimism','mainnet','account','ETH',12,TRUE),
 ('linea','mainnet','account','ETH',12,TRUE),
 ('scroll','mainnet','account','ETH',12,TRUE),
 ('mantle','mainnet','account','MNT',12,TRUE),
 ('zksync','mainnet','account','ETH',12,TRUE),
 ('tron','mainnet','account','TRX',20,TRUE),
+('tron','nile','account','TRX',1,TRUE),
 ('solana','mainnet','account','SOL',32,TRUE),
+('solana','devnet','account','SOL',1,TRUE),
 ('bitcoin','mainnet','utxo','BTC',1,TRUE),
 ('bitcoin','testnet','utxo','BTC',1,TRUE),
 ('bitcoincash','mainnet','utxo','BCH',1,TRUE),
@@ -701,15 +706,20 @@ func (r *PostgresRegistry) seedChainPolicies(ctx context.Context) error {
 ('ethereum','mainnet',12,12,64,'{}',TRUE),
 ('ethereum','sepolia',1,1,12,'{}',TRUE),
 ('binance','mainnet',12,12,64,'{}',TRUE),
+('binance','testnet',1,1,12,'{}',TRUE),
 ('polygon','mainnet',64,64,256,'{}',TRUE),
+('polygon','amoy',1,1,12,'{}',TRUE),
 ('arbitrum','mainnet',12,12,64,'{}',TRUE),
+('arbitrum','sepolia',1,1,12,'{}',TRUE),
 ('optimism','mainnet',12,12,64,'{}',TRUE),
 ('linea','mainnet',12,12,64,'{}',TRUE),
 ('scroll','mainnet',12,12,64,'{}',TRUE),
 ('mantle','mainnet',12,12,64,'{}',TRUE),
 ('zksync','mainnet',12,12,64,'{}',TRUE),
 ('tron','mainnet',20,20,120,'{}',TRUE),
+('tron','nile',1,1,12,'{}',TRUE),
 ('solana','mainnet',32,32,160,'{}',TRUE),
+('solana','devnet',1,1,12,'{}',TRUE),
 ('bitcoin','mainnet',1,1,12,'{}',TRUE),
 ('bitcoin','testnet',1,1,12,'{}',TRUE),
 ('bitcoincash','mainnet',1,1,12,'{}',TRUE),
@@ -751,8 +761,12 @@ func normalizeChain(v string) string {
 	switch x {
 	case "eth":
 		return "ethereum"
-	case "bsc":
+	case "bsc", "bnb":
 		return "binance"
+	case "matic":
+		return "polygon"
+	case "arb":
+		return "arbitrum"
 	case "trx":
 		return "tron"
 	case "sol":

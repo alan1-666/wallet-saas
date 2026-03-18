@@ -24,14 +24,17 @@ var evmChains = map[string]struct{}{
 }
 
 var chainAlias = map[string]string{
-	"eth":  "ethereum",
-	"bsc":  "binance",
-	"trx":  "tron",
-	"sol":  "solana",
-	"btc":  "bitcoin",
-	"bch":  "bitcoincash",
-	"ltc":  "litecoin",
-	"doge": "dogecoin",
+	"eth":   "ethereum",
+	"bsc":   "binance",
+	"bnb":   "binance",
+	"matic": "polygon",
+	"arb":   "arbitrum",
+	"trx":   "tron",
+	"sol":   "solana",
+	"btc":   "bitcoin",
+	"bch":   "bitcoincash",
+	"ltc":   "litecoin",
+	"doge":  "dogecoin",
 }
 
 func NormalizeChain(chain string) string {

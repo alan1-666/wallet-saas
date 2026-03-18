@@ -24,6 +24,11 @@ go work sync
 
 Each service is intentionally lightweight and can run independently for incremental migration.
 
+## Testnet integration runbook (6 chains)
+See: `docs/TESTNET_6CHAINS_RUNBOOK.md`
+- Chains: ethereum(sepolia), binance(testnet), polygon(amoy), arbitrum(sepolia), solana(devnet), tron(nile)
+- Flows: HD address create, deposit credit, withdraw, sweep
+
 ## Production Docker deployment
 Use the production compose file with multi-stage Docker builds:
 
