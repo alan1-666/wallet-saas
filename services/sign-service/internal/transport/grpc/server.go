@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
 	"wallet-saas-v2/services/sign-service/internal/config"
 	crypto2 "wallet-saas-v2/services/sign-service/internal/crypto"
+	"wallet-saas-v2/services/sign-service/internal/hd"
 	"wallet-saas-v2/services/sign-service/internal/keystore"
 	pb "wallet-saas-v2/services/sign-service/internal/pb"
 )
@@ -57,6 +59,9 @@ func (s *GRPCServer) ExportPublicKeyList(_ context.Context, req *pb.ExportPublic
 	if req.GetNumber() > 10000 {
 		return &pb.ExportPublicKeyResponse{Code: "0", Msg: "Number must be less than 10000"}, nil
 	}
+	if keyID := strings.TrimSpace(req.GetConsumerToken()); keyID != "" {
+		return s.exportHDPublicKey(req.GetType(), keyID)
+	}
 
 	count := int(req.GetNumber())
 	keyList := make([]keystore.Key, 0, count)
@@ -95,6 +100,9 @@ func (s *GRPCServer) ExportPublicKeyList(_ context.Context, req *pb.ExportPublic
 }
 
 func (s *GRPCServer) SignTxMessage(_ context.Context, req *pb.SignTxMessageRequest) (*pb.SignTxMessageResponse, error) {
+	if keyID := strings.TrimSpace(req.GetConsumerToken()); keyID != "" {
+		return s.signHDMessage(req.GetType(), keyID, req.GetMessageHash())
+	}
 	privKey, ok := s.store.GetPrivKey(req.GetPublicKey())
 	if !ok {
 		return nil, fmt.Errorf("get private key by public key failed")
@@ -118,4 +126,74 @@ func (s *GRPCServer) SignTxMessage(_ context.Context, req *pb.SignTxMessageReque
 	}
 
 	return &pb.SignTxMessageResponse{Code: "1", Msg: "sign tx message success", Signature: signature}, nil
+}
+
+func (s *GRPCServer) exportHDPublicKey(signType, keyID string) (*pb.ExportPublicKeyResponse, error) {
+	ref, err := hd.ParseKeyID(keyID)
+	if err != nil {
+		return &pb.ExportPublicKeyResponse{Code: "0", Msg: err.Error()}, nil
+	}
+	if normalizeSignType(signType) != "" && normalizeSignType(signType) != ref.SignType {
+		return &pb.ExportPublicKeyResponse{Code: "0", Msg: "sign type mismatch"}, nil
+	}
+	seed, err := s.store.GetOrCreateMasterSeed(ref.SignType)
+	if err != nil {
+		return nil, err
+	}
+	derived, err := hd.DeriveKey(seed, ref)
+	if err != nil {
+		return nil, err
+	}
+	return &pb.ExportPublicKeyResponse{
+		Code: "1",
+		Msg:  "derive hd public key success",
+		PublicKey: []*pb.PublicKey{
+			{
+				CompressPubkey:   derived.PublicKeyHex,
+				DecompressPubkey: derived.AlternatePublicKey,
+			},
+		},
+	}, nil
+}
+
+func (s *GRPCServer) signHDMessage(signType, keyID, messageHash string) (*pb.SignTxMessageResponse, error) {
+	ref, err := hd.ParseKeyID(keyID)
+	if err != nil {
+		return &pb.SignTxMessageResponse{Code: "0", Msg: err.Error()}, nil
+	}
+	if normalizeSignType(signType) != "" && normalizeSignType(signType) != ref.SignType {
+		return &pb.SignTxMessageResponse{Code: "0", Msg: "sign type mismatch"}, nil
+	}
+	seed, err := s.store.GetOrCreateMasterSeed(ref.SignType)
+	if err != nil {
+		return nil, err
+	}
+	derived, err := hd.DeriveKey(seed, ref)
+	if err != nil {
+		return nil, err
+	}
+	var signature string
+	switch ref.SignType {
+	case "ecdsa":
+		signature, err = crypto2.SignECDSAMessage(derived.PrivateKeyHex, messageHash)
+	case "eddsa":
+		signature, err = crypto2.SignEdDSAMessage(derived.PrivateKeyHex, messageHash)
+	default:
+		err = fmt.Errorf("unsupported key type")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &pb.SignTxMessageResponse{Code: "1", Msg: "sign hd tx message success", Signature: signature}, nil
+}
+
+func normalizeSignType(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "ecdsa":
+		return "ecdsa"
+	case "eddsa", "ed25519":
+		return "eddsa"
+	default:
+		return ""
+	}
 }

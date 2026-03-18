@@ -44,11 +44,15 @@ func (r *PostgresRegistry) UpsertWatchAddress(ctx context.Context, in ports.Watc
 	in.Chain = normalizeChain(in.Chain)
 	in.Network = normalizeNetwork(in.Network)
 	in.Coin = normalizeCoin(in.Coin)
+	in.SignType = normalizeSignType(in.SignType)
 	if in.SignType == "" {
 		in.SignType = "ecdsa"
 	}
-	if in.Model == "" || in.Chain == "" || in.Network == "" || in.Coin == "" {
-		return fmt.Errorf("model/chain/network/coin are required")
+	if in.Model == "" || in.Chain == "" || in.Network == "" || in.Coin == "" || strings.TrimSpace(in.KeyID) == "" {
+		return fmt.Errorf("model/chain/network/coin/key_id are required")
+	}
+	if strings.TrimSpace(in.Address) == "" || strings.TrimSpace(in.PublicKey) == "" {
+		return fmt.Errorf("address/public_key are required")
 	}
 	meta, err := r.GetChainMetadata(ctx, in.Chain, in.Network)
 	if err != nil {
@@ -84,19 +88,7 @@ func (r *PostgresRegistry) UpsertWatchAddress(ctx context.Context, in ports.Watc
 		return err
 	}
 
-	_, err = tx.ExecContext(ctx, `
-INSERT INTO wallet_addresses (
-  tenant_id, account_id, model, chain, coin, network, address, public_key, sign_type, status
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'ACTIVE')
-ON CONFLICT (tenant_id, account_id, chain, coin, network, address)
-DO UPDATE SET
-  model=EXCLUDED.model,
-  public_key=EXCLUDED.public_key,
-  sign_type=EXCLUDED.sign_type,
-  status='ACTIVE',
-  updated_at=NOW()
-`, in.TenantID, in.AccountID, in.Model, in.Chain, in.Coin, in.Network, in.Address, in.PublicKey, in.SignType)
-	if err != nil {
+	if err := r.upsertWalletAddressTx(ctx, tx, in); err != nil {
 		return err
 	}
 
@@ -138,6 +130,13 @@ VALUES ($1,$2,$3,$4,$5)
 ON CONFLICT (tenant_id, account_id)
 DO UPDATE SET account_tag=EXCLUDED.account_tag, status=EXCLUDED.status, remark=EXCLUDED.remark, updated_at=NOW()
 `, in.TenantID, in.AccountID, in.AccountTag, status, in.Remark); err != nil {
+		return ports.WalletAccount{}, err
+	}
+	if _, err := r.db.ExecContext(ctx, `
+UPDATE wallet_accounts
+SET hd_account_index = id
+WHERE tenant_id=$1 AND account_id=$2 AND (hd_account_index IS NULL OR hd_account_index < 0)
+`, in.TenantID, in.AccountID); err != nil {
 		return ports.WalletAccount{}, err
 	}
 	return r.GetAccount(ctx, in.TenantID, in.AccountID)
@@ -188,12 +187,12 @@ LIMIT $2 OFFSET $3
 
 func (r *PostgresRegistry) ListAccountAddresses(ctx context.Context, tenantID, accountID string) ([]ports.WalletAddress, error) {
 	rows, err := r.db.QueryContext(ctx, `
-SELECT tenant_id, account_id, model, chain, coin, network, address, public_key, sign_type, status,
+SELECT tenant_id, account_id, model, chain, coin, network, address, key_id, public_key, sign_type, address_type, derivation_path, change_index, address_index, status,
        TO_CHAR(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
        TO_CHAR(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
 FROM wallet_addresses
 WHERE tenant_id=$1 AND account_id=$2
-ORDER BY id DESC
+ORDER BY address_index ASC, id ASC
 `, tenantID, accountID)
 	if err != nil {
 		return nil, err
@@ -202,12 +201,111 @@ ORDER BY id DESC
 	out := make([]ports.WalletAddress, 0, 8)
 	for rows.Next() {
 		var item ports.WalletAddress
-		if err := rows.Scan(&item.TenantID, &item.AccountID, &item.Model, &item.Chain, &item.Coin, &item.Network, &item.Address, &item.PublicKey, &item.SignType, &item.Status, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.TenantID, &item.AccountID, &item.Model, &item.Chain, &item.Coin, &item.Network, &item.Address, &item.KeyID, &item.PublicKey, &item.SignType, &item.AddressType, &item.DerivationPath, &item.ChangeIndex, &item.AddressIndex, &item.Status, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+func (r *PostgresRegistry) PrepareAddress(ctx context.Context, in ports.PrepareAddressInput) (ports.PreparedAddress, error) {
+	in.Model = normalizeModel(in.Model)
+	in.Chain = normalizeChain(in.Chain)
+	in.Network = normalizeNetwork(in.Network)
+	in.SignType = normalizeSignType(in.SignType)
+	if in.Model == "" || in.Chain == "" || in.Network == "" || in.SignType == "" {
+		return ports.PreparedAddress{}, fmt.Errorf("model/chain/network/sign_type are required")
+	}
+
+	var existing ports.WalletAddress
+	err := r.db.QueryRowContext(ctx, `
+SELECT tenant_id, account_id, model, chain, coin, network, address, key_id, public_key, sign_type, address_type, derivation_path, change_index, address_index, status,
+       TO_CHAR(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+       TO_CHAR(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+FROM wallet_addresses
+WHERE tenant_id=$1
+  AND account_id=$2
+  AND LOWER(chain)=LOWER($3)
+  AND LOWER(network)=LOWER($4)
+  AND UPPER(COALESCE(status, 'ACTIVE'))='ACTIVE'
+  AND COALESCE(key_id, '') <> ''
+ORDER BY address_index ASC, id ASC
+LIMIT 1
+`, in.TenantID, in.AccountID, in.Chain, in.Network).Scan(
+		&existing.TenantID, &existing.AccountID, &existing.Model, &existing.Chain, &existing.Coin, &existing.Network, &existing.Address, &existing.KeyID, &existing.PublicKey, &existing.SignType, &existing.AddressType, &existing.DerivationPath, &existing.ChangeIndex, &existing.AddressIndex, &existing.Status, &existing.CreatedAt, &existing.UpdatedAt,
+	)
+	if err == nil {
+		return ports.PreparedAddress{WalletAddress: existing, Existing: true}, nil
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return ports.PreparedAddress{}, err
+	}
+
+	var accountIndex int64
+	if err := r.db.QueryRowContext(ctx, `
+SELECT hd_account_index
+FROM wallet_accounts
+WHERE tenant_id=$1 AND account_id=$2
+`, in.TenantID, in.AccountID).Scan(&accountIndex); err != nil {
+		return ports.PreparedAddress{}, err
+	}
+	if accountIndex < 0 {
+		return ports.PreparedAddress{}, fmt.Errorf("invalid hd account index")
+	}
+
+	var addressIndex int64
+	if err := r.db.QueryRowContext(ctx, `
+SELECT COALESCE(MAX(address_index), -1) + 1
+FROM wallet_addresses
+WHERE tenant_id=$1
+  AND account_id=$2
+  AND LOWER(chain)=LOWER($3)
+  AND LOWER(network)=LOWER($4)
+  AND COALESCE(key_id, '') <> ''
+`, in.TenantID, in.AccountID, in.Chain, in.Network).Scan(&addressIndex); err != nil {
+		return ports.PreparedAddress{}, err
+	}
+	keyID := buildHDKeyID(in.SignType, in.Chain, accountIndex, 0, addressIndex)
+	derivationPath, err := buildHDDerivationPath(in.SignType, in.Chain, accountIndex, 0, addressIndex)
+	if err != nil {
+		return ports.PreparedAddress{}, err
+	}
+	return ports.PreparedAddress{
+		WalletAddress: ports.WalletAddress{
+			TenantID:       in.TenantID,
+			AccountID:      in.AccountID,
+			Model:          in.Model,
+			Chain:          in.Chain,
+			Network:        in.Network,
+			KeyID:          keyID,
+			SignType:       in.SignType,
+			AddressType:    in.AddressType,
+			DerivationPath: derivationPath,
+			ChangeIndex:    0,
+			AddressIndex:   addressIndex,
+			Status:         "ACTIVE",
+		},
+		Existing: false,
+	}, nil
+}
+
+func (r *PostgresRegistry) GetAccountAddressByKeyID(ctx context.Context, tenantID, accountID, keyID string) (ports.WalletAddress, error) {
+	var out ports.WalletAddress
+	err := r.db.QueryRowContext(ctx, `
+SELECT tenant_id, account_id, model, chain, coin, network, address, key_id, public_key, sign_type, address_type, derivation_path, change_index, address_index, status,
+       TO_CHAR(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+       TO_CHAR(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+FROM wallet_addresses
+WHERE tenant_id=$1
+  AND account_id=$2
+  AND key_id=$3
+ORDER BY id DESC
+LIMIT 1
+`, tenantID, accountID, keyID).Scan(
+		&out.TenantID, &out.AccountID, &out.Model, &out.Chain, &out.Coin, &out.Network, &out.Address, &out.KeyID, &out.PublicKey, &out.SignType, &out.AddressType, &out.DerivationPath, &out.ChangeIndex, &out.AddressIndex, &out.Status, &out.CreatedAt, &out.UpdatedAt,
+	)
+	return out, err
 }
 
 func (r *PostgresRegistry) GetChainMetadata(ctx context.Context, chain, network string) (ports.ChainMetadata, error) {
@@ -279,12 +377,82 @@ LIMIT 1
 	return out, nil
 }
 
+func (r *PostgresRegistry) upsertWalletAddressTx(ctx context.Context, tx *sql.Tx, in ports.WatchAddressInput) error {
+	updateByKeyID, err := tx.ExecContext(ctx, `
+UPDATE wallet_addresses
+SET account_id=$2,
+    model=$3,
+    chain=$4,
+    network=$5,
+    address=$6,
+    public_key=$7,
+    sign_type=$8,
+    address_type=$9,
+    derivation_path=$10,
+    change_index=$11,
+    address_index=$12,
+    status='ACTIVE',
+    updated_at=NOW()
+WHERE tenant_id=$1
+  AND key_id=$13
+`, in.TenantID, in.AccountID, in.Model, in.Chain, in.Network, in.Address, in.PublicKey, in.SignType, in.AddressType, in.DerivationPath, in.ChangeIndex, in.AddressIndex, in.KeyID)
+	if err != nil {
+		return err
+	}
+	if rows, _ := updateByKeyID.RowsAffected(); rows > 0 {
+		return nil
+	}
+
+	updateByAddress, err := tx.ExecContext(ctx, `
+UPDATE wallet_addresses
+SET model=$3,
+    chain=$4,
+    network=$5,
+    address=$6,
+    key_id=CASE WHEN COALESCE(key_id, '') = '' THEN $13 ELSE key_id END,
+    public_key=$7,
+    sign_type=$8,
+    address_type=$9,
+    derivation_path=$10,
+    change_index=$11,
+    address_index=$12,
+    status='ACTIVE',
+    updated_at=NOW()
+WHERE tenant_id=$1
+  AND account_id=$2
+  AND LOWER(chain)=LOWER($4)
+  AND LOWER(network)=LOWER($5)
+  AND LOWER(address)=LOWER($6)
+`, in.TenantID, in.AccountID, in.Model, in.Chain, in.Network, in.Address, in.PublicKey, in.SignType, in.AddressType, in.DerivationPath, in.ChangeIndex, in.AddressIndex, in.KeyID)
+	if err != nil {
+		return err
+	}
+	if rows, _ := updateByAddress.RowsAffected(); rows > 0 {
+		return nil
+	}
+
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO wallet_addresses (
+  tenant_id, account_id, model, chain, coin, network, address, key_id, public_key, sign_type, address_type, derivation_path, change_index, address_index, status
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'ACTIVE')
+`, in.TenantID, in.AccountID, in.Model, in.Chain, in.Coin, in.Network, in.Address, in.KeyID, in.PublicKey, in.SignType, in.AddressType, in.DerivationPath, in.ChangeIndex, in.AddressIndex)
+	return err
+}
+
 func (r *PostgresRegistry) upsertAccountTx(ctx context.Context, tx *sql.Tx, tenantID, accountID, status, remark string) error {
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO wallet_accounts (tenant_id, account_id, status, remark)
 VALUES ($1,$2,$3,$4)
 ON CONFLICT (tenant_id, account_id) DO NOTHING
 `, tenantID, accountID, status, remark)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
+UPDATE wallet_accounts
+SET hd_account_index = id
+WHERE tenant_id=$1 AND account_id=$2 AND (hd_account_index IS NULL OR hd_account_index < 0)
+`, tenantID, accountID)
 	return err
 }
 
@@ -294,6 +462,7 @@ func (r *PostgresRegistry) ensureSchema(ctx context.Context) error {
 id BIGSERIAL PRIMARY KEY,
 tenant_id TEXT NOT NULL,
 account_id TEXT NOT NULL,
+hd_account_index BIGINT NULL,
 account_tag TEXT NOT NULL DEFAULT '',
 status TEXT NOT NULL DEFAULT 'ACTIVE',
 remark TEXT NOT NULL DEFAULT '',
@@ -310,8 +479,13 @@ chain TEXT NOT NULL,
 coin TEXT NOT NULL,
 network TEXT NOT NULL,
 address TEXT NOT NULL,
+key_id TEXT NOT NULL DEFAULT '',
 public_key TEXT NOT NULL,
 sign_type TEXT NOT NULL DEFAULT 'ecdsa',
+address_type TEXT NOT NULL DEFAULT '',
+derivation_path TEXT NOT NULL DEFAULT '',
+change_index BIGINT NOT NULL DEFAULT 0,
+address_index BIGINT NOT NULL DEFAULT 0,
 status TEXT NOT NULL DEFAULT 'ACTIVE',
 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -372,6 +546,12 @@ ON scan_watch_addresses (model, chain, coin, network, address, tenant_id, accoun
 		return fmt.Errorf("registry schema index failed: %w", err)
 	}
 	if _, err := r.db.ExecContext(ctx, `
+CREATE INDEX IF NOT EXISTS idx_wallet_addresses_key_id
+ON wallet_addresses (tenant_id, account_id, key_id)
+`); err != nil {
+		return fmt.Errorf("registry wallet_addresses key index failed: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `
 CREATE UNIQUE INDEX IF NOT EXISTS uq_chain_metadata_chain_network
 ON chain_metadata (chain, network)
 `); err != nil {
@@ -403,6 +583,36 @@ ALTER TABLE wallet_accounts ADD COLUMN IF NOT EXISTS remark TEXT NOT NULL DEFAUL
 		return fmt.Errorf("registry schema alter remark failed: %w", err)
 	}
 	if _, err := r.db.ExecContext(ctx, `
+ALTER TABLE wallet_accounts ADD COLUMN IF NOT EXISTS hd_account_index BIGINT
+`); err != nil {
+		return fmt.Errorf("registry schema alter hd_account_index failed: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `
+ALTER TABLE wallet_addresses ADD COLUMN IF NOT EXISTS key_id TEXT NOT NULL DEFAULT ''
+`); err != nil {
+		return fmt.Errorf("registry schema alter key_id failed: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `
+ALTER TABLE wallet_addresses ADD COLUMN IF NOT EXISTS address_type TEXT NOT NULL DEFAULT ''
+`); err != nil {
+		return fmt.Errorf("registry schema alter address_type failed: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `
+ALTER TABLE wallet_addresses ADD COLUMN IF NOT EXISTS derivation_path TEXT NOT NULL DEFAULT ''
+`); err != nil {
+		return fmt.Errorf("registry schema alter derivation_path failed: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `
+ALTER TABLE wallet_addresses ADD COLUMN IF NOT EXISTS change_index BIGINT NOT NULL DEFAULT 0
+`); err != nil {
+		return fmt.Errorf("registry schema alter change_index failed: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `
+ALTER TABLE wallet_addresses ADD COLUMN IF NOT EXISTS address_index BIGINT NOT NULL DEFAULT 0
+`); err != nil {
+		return fmt.Errorf("registry schema alter address_index failed: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `
 INSERT INTO wallet_accounts (tenant_id, account_id, status, remark)
 SELECT DISTINCT tenant_id, account_id, 'ACTIVE', ''
 FROM wallet_addresses
@@ -417,6 +627,13 @@ FROM scan_watch_addresses
 ON CONFLICT (tenant_id, account_id) DO NOTHING
 `); err != nil {
 		return fmt.Errorf("registry backfill accounts from scan_watch_addresses failed: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `
+UPDATE wallet_accounts
+SET hd_account_index = id
+WHERE hd_account_index IS NULL OR hd_account_index < 0
+`); err != nil {
+		return fmt.Errorf("registry backfill hd_account_index failed: %w", err)
 	}
 	if err := r.seedChainMetadata(ctx); err != nil {
 		return err

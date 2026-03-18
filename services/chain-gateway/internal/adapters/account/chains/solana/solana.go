@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math"
+	"math/big"
 	"sort"
 	"strconv"
 	"strings"
@@ -722,89 +722,9 @@ func (c *ChainAdaptor) BuildUnSignTransaction(req *account.UnSignTransactionRequ
 		log.Error("Failed to decode tx payload", "err", err)
 		return nil, err
 	}
-	value, _ := strconv.ParseUint(data.Value, 10, 64)
-
-	fromPubkey, err := solana.PublicKeyFromBase58(data.FromAddress)
+	tx, err := c.buildTransferTransaction(data)
 	if err != nil {
 		return nil, err
-	}
-
-	toPubkey, err := solana.PublicKeyFromBase58(data.ToAddress)
-	if err != nil {
-		return nil, err
-	}
-
-	var tx *solana.Transaction
-	if isSOLTransfer(data.ContractAddress) {
-		tx, err = solana.NewTransaction(
-			[]solana.Instruction{
-				system.NewTransferInstruction(
-					value,
-					fromPubkey,
-					toPubkey,
-				).Build(),
-			},
-			solana.MustHashFromBase58(data.Nonce),
-			solana.TransactionPayer(fromPubkey),
-		)
-	} else {
-		mintPubkey := solana.MustPublicKeyFromBase58(data.ContractAddress)
-		fromTokenAccount, _, err := solana.FindAssociatedTokenAddress(
-			fromPubkey,
-			mintPubkey,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to find associated token address: %w", err)
-		}
-		toTokenAccount, _, err := solana.FindAssociatedTokenAddress(
-			toPubkey,
-			mintPubkey,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to find associated token address: %w", err)
-		}
-
-		tokenInfo, err := GetTokenSupply(c.sdkClient, mintPubkey)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get token info: %w", err)
-		}
-		decimals := tokenInfo.Value.Decimals
-
-		valueFloat, err := strconv.ParseFloat(data.Value, 64)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse value: %w", err)
-		}
-		actualValue := uint64(valueFloat * math.Pow10(int(decimals)))
-
-		transferInstruction := token.NewTransferInstruction(
-			actualValue,
-			fromTokenAccount,
-			toTokenAccount,
-			fromPubkey,
-			[]solana.PublicKey{},
-		).Build()
-
-		accountInfo, err := GetAccountInfo(c.sdkClient, toTokenAccount)
-
-		if err != nil || accountInfo.Value == nil {
-			createATAInstruction := associatedtokenaccount.NewCreateInstruction(
-				fromPubkey,
-				toPubkey,
-				mintPubkey,
-			).Build()
-
-			tx, err = solana.NewTransaction(
-				[]solana.Instruction{createATAInstruction, transferInstruction},
-				solana.MustHashFromBase58(data.Nonce),
-				solana.TransactionPayer(fromPubkey),
-			)
-		} else {
-			tx, err = solana.NewTransaction(
-				[]solana.Instruction{transferInstruction},
-				solana.MustHashFromBase58(data.Nonce),
-				solana.TransactionPayer(fromPubkey),
-			)
-		}
 	}
 
 	log.Info("Transaction:", tx.String())
@@ -859,15 +779,7 @@ func (c *ChainAdaptor) decodeTxStructure(base64Tx string) (TxStructure, error) {
 	return data, fmt.Errorf("unsupported tx payload format")
 }
 
-func (c ChainAdaptor) BuildSignedTransaction(req *account.SignedTransactionRequest) (*account.SignedTransactionResponse, error) {
-	data, err := c.decodeTxStructure(req.Base64Tx)
-	if err != nil {
-		log.Error("Failed to decode tx payload", "err", err)
-		return nil, err
-	}
-
-	value, _ := strconv.ParseUint(data.Value, 10, 64)
-
+func (c *ChainAdaptor) buildTransferTransaction(data TxStructure) (*solana.Transaction, error) {
 	fromPubkey, err := solana.PublicKeyFromBase58(data.FromAddress)
 	if err != nil {
 		return nil, err
@@ -878,9 +790,12 @@ func (c ChainAdaptor) BuildSignedTransaction(req *account.SignedTransactionReque
 		return nil, err
 	}
 
-	var tx *solana.Transaction
 	if isSOLTransfer(data.ContractAddress) {
-		tx, err = solana.NewTransaction(
+		value, err := strconv.ParseUint(strings.TrimSpace(data.Value), 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse lamports: %w", err)
+		}
+		return solana.NewTransaction(
 			[]solana.Instruction{
 				system.NewTransferInstruction(
 					value,
@@ -891,62 +806,139 @@ func (c ChainAdaptor) BuildSignedTransaction(req *account.SignedTransactionReque
 			solana.MustHashFromBase58(data.Nonce),
 			solana.TransactionPayer(fromPubkey),
 		)
-	} else {
-		mintPubkey := solana.MustPublicKeyFromBase58(data.ContractAddress)
-		fromTokenAccount, _, err := solana.FindAssociatedTokenAddress(
-			fromPubkey,
-			mintPubkey,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to find associated token address: %w", err)
-		}
+	}
 
-		toTokenAccount, _, err := solana.FindAssociatedTokenAddress(
+	mintPubkey := solana.MustPublicKeyFromBase58(data.ContractAddress)
+	fromTokenAccount, _, err := solana.FindAssociatedTokenAddress(fromPubkey, mintPubkey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find source token account: %w", err)
+	}
+	toTokenAccount, _, err := solana.FindAssociatedTokenAddress(toPubkey, mintPubkey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find destination token account: %w", err)
+	}
+
+	decimals, err := c.resolveTokenDecimals(data, mintPubkey)
+	if err != nil {
+		return nil, err
+	}
+	actualValue, err := normalizeTokenAmount(data.Value, data.AmountUnit, decimals)
+	if err != nil {
+		return nil, err
+	}
+
+	instructions := make([]solana.Instruction, 0, 2)
+	accountInfo, err := GetAccountInfo(c.sdkClient, toTokenAccount)
+	if err != nil || accountInfo.Value == nil {
+		instructions = append(instructions, associatedtokenaccount.NewCreateInstruction(
+			fromPubkey,
 			toPubkey,
 			mintPubkey,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to find associated token address: %w", err)
-		}
+		).Build())
+	}
+	instructions = append(instructions, token.NewTransferInstruction(
+		actualValue,
+		fromTokenAccount,
+		toTokenAccount,
+		fromPubkey,
+		[]solana.PublicKey{},
+	).Build())
 
-		tokenInfo, err := GetTokenSupply(c.sdkClient, mintPubkey)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get token info: %w", err)
-		}
-		decimals := tokenInfo.Value.Decimals
+	return solana.NewTransaction(
+		instructions,
+		solana.MustHashFromBase58(data.Nonce),
+		solana.TransactionPayer(fromPubkey),
+	)
+}
 
-		valueFloat, err := strconv.ParseFloat(data.Value, 64)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse value: %w", err)
+func (c *ChainAdaptor) resolveTokenDecimals(data TxStructure, mintPubkey solana.PublicKey) (uint8, error) {
+	if data.TokenDecimals > 0 {
+		if data.TokenDecimals > 255 {
+			return 0, fmt.Errorf("token_decimals exceeds uint8: %d", data.TokenDecimals)
 		}
-		actualValue := uint64(valueFloat * math.Pow10(int(decimals)))
+		return uint8(data.TokenDecimals), nil
+	}
+	tokenInfo, err := GetTokenSupply(c.sdkClient, mintPubkey)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get token info: %w", err)
+	}
+	return tokenInfo.Value.Decimals, nil
+}
 
-		transferInstruction := token.NewTransferInstruction(
-			actualValue,
-			fromTokenAccount,
-			toTokenAccount,
-			fromPubkey,
-			[]solana.PublicKey{},
-		).Build()
-		accountInfo, err := GetAccountInfo(c.sdkClient, toTokenAccount)
-		if err != nil || accountInfo.Value == nil {
-			createATAInstruction := associatedtokenaccount.NewCreateInstruction(
-				fromPubkey,
-				toPubkey,
-				mintPubkey,
-			).Build()
-			tx, err = solana.NewTransaction(
-				[]solana.Instruction{createATAInstruction, transferInstruction},
-				solana.MustHashFromBase58(data.Nonce),
-				solana.TransactionPayer(fromPubkey),
-			)
-		} else {
-			tx, err = solana.NewTransaction(
-				[]solana.Instruction{transferInstruction},
-				solana.MustHashFromBase58(data.Nonce),
-				solana.TransactionPayer(fromPubkey),
-			)
+func normalizeTokenAmount(value, amountUnit string, decimals uint8) (uint64, error) {
+	normalizedValue := strings.TrimSpace(value)
+	if normalizedValue == "" {
+		return 0, fmt.Errorf("token amount is required")
+	}
+
+	switch strings.ToLower(strings.TrimSpace(amountUnit)) {
+	case "", "raw", "base", "base_unit", "base_units", "smallest":
+		if strings.TrimSpace(amountUnit) == "" && strings.Contains(normalizedValue, ".") {
+			return parseDisplayTokenAmount(normalizedValue, decimals)
 		}
+		rawValue, err := strconv.ParseUint(normalizedValue, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("failed to parse raw token amount: %w", err)
+		}
+		return rawValue, nil
+	case "display", "ui", "human":
+		return parseDisplayTokenAmount(normalizedValue, decimals)
+	default:
+		return 0, fmt.Errorf("unsupported token amount unit: %s", amountUnit)
+	}
+}
+
+func parseDisplayTokenAmount(value string, decimals uint8) (uint64, error) {
+	if strings.HasPrefix(value, "-") {
+		return 0, fmt.Errorf("token amount must be non-negative")
+	}
+	parts := strings.Split(value, ".")
+	if len(parts) > 2 {
+		return 0, fmt.Errorf("invalid display token amount: %s", value)
+	}
+
+	intPart := parts[0]
+	if intPart == "" {
+		intPart = "0"
+	}
+	fracPart := ""
+	if len(parts) == 2 {
+		fracPart = parts[1]
+	}
+	if len(fracPart) > int(decimals) {
+		return 0, fmt.Errorf("display token amount exceeds supported precision: decimals=%d", decimals)
+	}
+	fracPart += strings.Repeat("0", int(decimals)-len(fracPart))
+
+	intValue := new(big.Int)
+	if _, ok := intValue.SetString(intPart, 10); !ok {
+		return 0, fmt.Errorf("invalid integer token amount: %s", value)
+	}
+
+	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
+	total := new(big.Int).Mul(intValue, scale)
+	if fracPart != "" {
+		fracValue := new(big.Int)
+		if _, ok := fracValue.SetString(fracPart, 10); !ok {
+			return 0, fmt.Errorf("invalid fractional token amount: %s", value)
+		}
+		total.Add(total, fracValue)
+	}
+	if !total.IsUint64() {
+		return 0, fmt.Errorf("token amount overflows uint64")
+	}
+	return total.Uint64(), nil
+}
+
+func (c ChainAdaptor) BuildSignedTransaction(req *account.SignedTransactionRequest) (*account.SignedTransactionResponse, error) {
+	data, err := c.decodeTxStructure(req.Base64Tx)
+	if err != nil {
+		log.Error("Failed to decode tx payload", "err", err)
+		return nil, err
+	}
+	tx, err := c.buildTransferTransaction(data)
+	if err != nil {
+		return nil, err
 	}
 	if len(tx.Signatures) == 0 {
 		tx.Signatures = make([]solana.Signature, 1)

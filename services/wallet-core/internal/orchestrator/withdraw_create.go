@@ -9,6 +9,9 @@ func (o *WithdrawOrchestrator) CreateAndBroadcast(ctx context.Context, req Withd
 	if err := o.checkRisk(ctx, req); err != nil {
 		return "", err
 	}
+	if err := o.ensureChainFunds(ctx, req); err != nil {
+		return "", err
+	}
 
 	if err := o.freezeWithdraw(ctx, req); err != nil {
 		return "", err
@@ -30,14 +33,14 @@ func (o *WithdrawOrchestrator) CreateAndBroadcast(ctx context.Context, req Withd
 		return "", err
 	}
 
-	keys, err := o.resolveKeys(req)
+	signers, err := o.resolveSigners(req)
 	if err != nil {
 		return "", err
 	}
 	signType := resolveSignType(req.SignType, req.Tx.Chain, unsignedResult.SignHashes)
 
 	if len(unsignedResult.SignHashes) == 0 {
-		txHash, err = o.signAndBroadcastRaw(ctx, req, signType, keys[0], unsignedResult)
+		txHash, err = o.signAndBroadcastRaw(ctx, req, signType, signers[0], unsignedResult)
 		if err != nil {
 			return "", err
 		}
@@ -48,7 +51,7 @@ func (o *WithdrawOrchestrator) CreateAndBroadcast(ctx context.Context, req Withd
 		return txHash, nil
 	}
 
-	signatures, publicKeys, err := o.buildSignatures(ctx, signType, req.Tx.Chain, keys, unsignedResult.SignHashes)
+	signatures, publicKeys, err := o.buildSignatures(ctx, signType, req.Tx.Chain, signers, unsignedResult.SignHashes)
 	if err != nil {
 		return "", err
 	}

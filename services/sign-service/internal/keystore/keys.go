@@ -1,8 +1,15 @@
 package keystore
 
+import (
+	"crypto/rand"
+	"fmt"
+)
+
 type Keys struct {
 	store *levelStore
 }
+
+const masterSeedKeyPrefix = "__hd_seed__:"
 
 func New(path string) (*Keys, error) {
 	store, err := newLevelStore(path)
@@ -37,4 +44,22 @@ func (k *Keys) StoreKeys(keyList []Key) bool {
 		}
 	}
 	return true
+}
+
+func (k *Keys) GetOrCreateMasterSeed(signType string) ([]byte, error) {
+	if k == nil || k.store == nil {
+		return nil, fmt.Errorf("keystore is not initialized")
+	}
+	key := []byte(masterSeedKeyPrefix + signType)
+	if seed, err := k.store.Get(key); err == nil && len(seed) > 0 {
+		return seed, nil
+	}
+	seed := make([]byte, 64)
+	if _, err := rand.Read(seed); err != nil {
+		return nil, err
+	}
+	if err := k.store.Put(key, seed); err != nil {
+		return nil, err
+	}
+	return seed, nil
 }

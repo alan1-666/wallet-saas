@@ -130,7 +130,6 @@ WHERE sw.active = TRUE
       WHERE wa.tenant_id = sw.tenant_id
         AND wa.account_id = sw.account_id
         AND LOWER(wa.chain) = LOWER(sw.chain)
-        AND UPPER(wa.coin) = UPPER(sw.coin)
         AND LOWER(wa.network) = LOWER(sw.network)
         AND LOWER(wa.address) = LOWER(sw.address)
         AND UPPER(COALESCE(wa.status, '')) = 'ACTIVE'

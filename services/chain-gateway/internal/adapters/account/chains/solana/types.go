@@ -344,6 +344,8 @@ type TxStructure struct {
 	ToAddress       string `json:"to_address"`
 	TokenId         string `json:"token_id"`
 	Value           string `json:"value"`
+	AmountUnit      string `json:"amount_unit,omitempty"`
+	TokenDecimals   uint32 `json:"token_decimals,omitempty"`
 	Signature       string `json:"signature,omitempty"`
 }
 

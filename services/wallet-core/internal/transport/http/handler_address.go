@@ -78,23 +78,40 @@ func (h *WithdrawHandler) CreateAddress(w http.ResponseWriter, r *http.Request) 
 		req.TreasuryAccountID = "treasury-main"
 	}
 
-	keys, err := h.KeyManager.ExportPublicKeys(r.Context(), req.SignType, 1)
+	prepared, err := h.Registry.PrepareAddress(r.Context(), ports.PrepareAddressInput{
+		TenantID:    req.TenantID,
+		AccountID:   req.AccountID,
+		Model:       req.Model,
+		Chain:       req.Chain,
+		Network:     req.Network,
+		SignType:    req.SignType,
+		AddressType: req.AddressType,
+	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if len(keys) == 0 || keys[0].CompressPubkey == "" {
-		http.Error(w, "empty public key", http.StatusBadGateway)
-		return
-	}
-	pubKey := keys[0].CompressPubkey
 
-	address, err := h.ChainAddr.ConvertAddress(r.Context(), req.Chain, req.Network, req.AddressType, pubKey)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
+	address := prepared.Address
+	pubKey := prepared.PublicKey
+	if !prepared.Existing {
+		derived, err := h.KeyManager.DeriveKey(r.Context(), req.SignType, prepared.KeyID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		if strings.TrimSpace(derived.PublicKey) == "" {
+			http.Error(w, "empty public key", http.StatusBadGateway)
+			return
+		}
+		pubKey = derived.PublicKey
+		address, err = h.ChainAddr.ConvertAddress(r.Context(), req.Chain, req.Network, req.AddressType, pubKey)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
 	}
-	if err := h.Auth.BindTenantKey(r.Context(), req.TenantID, pubKey); err != nil {
+	if err := h.Auth.BindTenantKey(r.Context(), req.TenantID, prepared.KeyID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -106,8 +123,13 @@ func (h *WithdrawHandler) CreateAddress(w http.ResponseWriter, r *http.Request) 
 		Coin:              req.Coin,
 		Network:           req.Network,
 		Address:           address,
+		KeyID:             prepared.KeyID,
 		PublicKey:         pubKey,
 		SignType:          req.SignType,
+		AddressType:       req.AddressType,
+		DerivationPath:    prepared.DerivationPath,
+		ChangeIndex:       prepared.ChangeIndex,
+		AddressIndex:      prepared.AddressIndex,
 		MinConfirmations:  req.MinConfirmations,
 		TreasuryAccountID: req.TreasuryAccountID,
 		AutoSweep:         autoSweep,
@@ -119,16 +141,20 @@ func (h *WithdrawHandler) CreateAddress(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(CreateAddressResponse{
-		TenantID:    req.TenantID,
-		AccountID:   req.AccountID,
-		Chain:       req.Chain,
-		Coin:        req.Coin,
-		Network:     req.Network,
-		Model:       req.Model,
-		PublicKey:   pubKey,
-		Address:     address,
-		SignType:    req.SignType,
-		AddressType: req.AddressType,
+		TenantID:       req.TenantID,
+		AccountID:      req.AccountID,
+		Chain:          req.Chain,
+		Coin:           req.Coin,
+		Network:        req.Network,
+		Model:          req.Model,
+		KeyID:          prepared.KeyID,
+		PublicKey:      pubKey,
+		Address:        address,
+		SignType:       req.SignType,
+		AddressType:    req.AddressType,
+		DerivationPath: prepared.DerivationPath,
+		ChangeIndex:    prepared.ChangeIndex,
+		AddressIndex:   prepared.AddressIndex,
 	})
 }
 
@@ -148,7 +174,6 @@ func (h *WithdrawHandler) findAccountAddress(ctx context.Context, tenantID, acco
 	}
 	chain = strings.ToLower(strings.TrimSpace(chain))
 	network = strings.ToLower(strings.TrimSpace(network))
-	coin = strings.ToUpper(strings.TrimSpace(coin))
 	for _, it := range items {
 		if strings.ToUpper(strings.TrimSpace(it.Status)) != "ACTIVE" {
 			continue
@@ -159,13 +184,38 @@ func (h *WithdrawHandler) findAccountAddress(ctx context.Context, tenantID, acco
 		if strings.ToLower(strings.TrimSpace(it.Network)) != network {
 			continue
 		}
-		if strings.ToUpper(strings.TrimSpace(it.Coin)) != coin {
-			continue
-		}
 		if strings.TrimSpace(it.Address) == "" || strings.TrimSpace(it.PublicKey) == "" {
 			continue
 		}
 		return it, nil
 	}
 	return ports.WalletAddress{}, fmt.Errorf("active address not found for account=%s chain=%s network=%s coin=%s", accountID, chain, network, coin)
+}
+
+func (h *WithdrawHandler) findAccountAddressByKeyID(ctx context.Context, tenantID, accountID, keyID string) (ports.WalletAddress, error) {
+	keyID = strings.TrimSpace(keyID)
+	if keyID == "" {
+		return ports.WalletAddress{}, fmt.Errorf("key_id is required")
+	}
+	if h.Registry == nil {
+		return ports.WalletAddress{}, fmt.Errorf("address registry not enabled")
+	}
+	item, err := h.Registry.GetAccountAddressByKeyID(ctx, tenantID, accountID, keyID)
+	if err == nil {
+		return item, nil
+	}
+	items, listErr := h.Registry.ListAccountAddresses(ctx, tenantID, accountID)
+	if listErr != nil {
+		return ports.WalletAddress{}, err
+	}
+	for _, it := range items {
+		if strings.TrimSpace(it.KeyID) != keyID {
+			continue
+		}
+		if strings.ToUpper(strings.TrimSpace(it.Status)) != "ACTIVE" {
+			continue
+		}
+		return it, nil
+	}
+	return ports.WalletAddress{}, err
 }

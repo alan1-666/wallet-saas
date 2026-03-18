@@ -302,7 +302,15 @@ func (p *Plugin) GetAccount(ctx context.Context, in ports.AccountInput) (ports.A
 	if err := p.ensureReader(); err != nil {
 		return ports.AccountResult{}, err
 	}
-	out, err := p.reader.GetBalance(ctx, in.Chain, in.Network, in.Address)
+	var (
+		out ports.BalanceResult
+		err error
+	)
+	if strings.TrimSpace(in.ContractAddress) != "" && !isSOLTransfer(strings.TrimSpace(in.ContractAddress)) {
+		out, err = p.reader.GetTokenBalance(ctx, in.Chain, in.Network, in.Address, in.ContractAddress)
+	} else {
+		out, err = p.reader.GetBalance(ctx, in.Chain, in.Network, in.Address)
+	}
 	if err != nil {
 		return ports.AccountResult{}, err
 	}

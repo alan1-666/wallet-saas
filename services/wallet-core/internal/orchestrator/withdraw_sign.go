@@ -11,15 +11,11 @@ import (
 	"wallet-saas-v2/services/wallet-core/internal/ports"
 )
 
-func (o *WithdrawOrchestrator) resolveKeys(req WithdrawRequest) ([]string, error) {
-	keys := req.KeyIDs
-	if len(keys) == 0 && req.KeyID != "" {
-		keys = []string{req.KeyID}
-	}
-	if len(keys) == 0 {
+func (o *WithdrawOrchestrator) resolveSigners(req WithdrawRequest) ([]ports.SignerRef, error) {
+	if len(req.Signers) == 0 {
 		return nil, fmt.Errorf("missing key id")
 	}
-	return keys, nil
+	return req.Signers, nil
 }
 
 func resolveSignType(signType, chain string, signHashes []string) string {
@@ -44,26 +40,27 @@ func chainUsesEdDSA(chain string) bool {
 	}
 }
 
-func (o *WithdrawOrchestrator) buildSignatures(ctx context.Context, signType, chain string, keys []string, signHashes []string) ([]string, []string, error) {
+func (o *WithdrawOrchestrator) buildSignatures(ctx context.Context, signType, chain string, signers []ports.SignerRef, signHashes []string) ([]string, []string, error) {
 	signatures := make([]string, 0, len(signHashes))
 	publicKeys := make([]string, 0, len(signHashes))
 	for i, signHash := range signHashes {
 		keyIdx := i
-		if keyIdx >= len(keys) {
-			keyIdx = len(keys) - 1
+		if keyIdx >= len(signers) {
+			keyIdx = len(signers) - 1
 		}
-		sig, err := o.Sign.SignMessage(ctx, signType, keys[keyIdx], signHash)
+		signer := signers[keyIdx]
+		sig, err := o.Sign.SignMessage(ctx, signType, signer.KeyID, signHash)
 		if err != nil {
 			return nil, nil, err
 		}
 		signatures = append(signatures, sig)
-		publicKeys = append(publicKeys, normalizeBroadcastPublicKey(chain, keys[keyIdx]))
+		publicKeys = append(publicKeys, normalizeBroadcastPublicKey(chain, signer.PublicKey))
 	}
 	return signatures, publicKeys, nil
 }
 
-func (o *WithdrawOrchestrator) signAndBroadcastRaw(ctx context.Context, req WithdrawRequest, signType, keyID string, unsigned ports.BuildUnsignedResult) (string, error) {
-	sig, err := o.Sign.SignMessage(ctx, signType, keyID, unsigned.UnsignedTx)
+func (o *WithdrawOrchestrator) signAndBroadcastRaw(ctx context.Context, req WithdrawRequest, signType string, signer ports.SignerRef, unsigned ports.BuildUnsignedResult) (string, error) {
+	sig, err := o.Sign.SignMessage(ctx, signType, signer.KeyID, unsigned.UnsignedTx)
 	if err != nil {
 		return "", err
 	}

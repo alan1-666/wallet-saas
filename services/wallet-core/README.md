@@ -27,8 +27,8 @@ State orchestration and domain logic.
   "tenant_id": "t1",
   "account_id": "a1",
   "order_id": "o1",
-  "key_id": "<public_key>",
-  "key_ids": ["<pubkey-input-0>", "<pubkey-input-1>"],
+  "key_id": "hd:ecdsa:ethereum:12:0:0",
+  "key_ids": ["hd:ecdsa:bitcoin:12:0:0", "hd:ecdsa:bitcoin:12:0:1"],
   "sign_type": "ecdsa",
   "chain": "ethereum",
   "network": "mainnet",
@@ -38,6 +38,31 @@ State orchestration and domain logic.
   "amount": "1000"
 }
 ```
+- `key_id` / `key_ids` are HD derivation key IDs, not raw public keys.
+- `wallet-core` resolves the matching public key from registry before broadcast.
+
+### Solana token withdraw request example
+```json
+{
+  "tenant_id": "t1",
+  "account_id": "a1",
+  "order_id": "sol-usdc-1",
+  "key_id": "hd:eddsa:solana:12:0:0",
+  "sign_type": "eddsa",
+  "chain": "solana",
+  "network": "devnet",
+  "coin": "USDC",
+  "from": "FnnDB1kLNpkgAc5QgGnPF7N2YCh5oa7s9MbhT9eaM41M",
+  "to": "7nTj8m6P6xZgJ2EJgYQW1R6cM4zKq8GxSxXy5pX1b2YV",
+  "amount": "1500000",
+  "contract_address": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+  "amount_unit": "raw",
+  "token_decimals": 6
+}
+```
+- `contract_address`: SPL mint address.
+- `amount_unit`: `raw` means smallest unit amount; `display` means UI amount like `1.5`.
+- `token_decimals`: optional override. If omitted, `chain-gateway` reads mint decimals on chain.
 
 ### UTXO request extension
 - `fee`: transaction fee string
@@ -61,6 +86,8 @@ State orchestration and domain logic.
   "treasury_account_id": "treasury-main"
 }
 ```
+- Response includes `key_id`, `derivation_path`, `change_index`, `address_index`.
+- Same `tenant_id + account_id + chain + network` reuses the same derived address. Registering another asset on that chain only adds a new watch row.
 
 ### Deposit notify request (state machine)
 ```json

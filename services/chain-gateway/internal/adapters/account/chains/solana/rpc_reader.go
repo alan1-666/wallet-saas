@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
@@ -47,6 +48,31 @@ func (r *RPCReader) GetBalance(ctx context.Context, chain, network, address stri
 	r.ReportSuccess(ep.Key)
 	return ports.BalanceResult{
 		Balance: strconv.FormatInt(out.Value, 10),
+		Network: strings.ToLower(strings.TrimSpace(network)),
+	}, nil
+}
+
+func (r *RPCReader) GetTokenBalance(ctx context.Context, chain, network, ownerAddress, mintAddress string) (ports.BalanceResult, error) {
+	ep, err := r.selectEndpoint(chain, network)
+	if err != nil {
+		return ports.BalanceResult{}, err
+	}
+	out := solanaTokenAccountsByOwnerResult{}
+	if err := r.call(ctx, ep, "getTokenAccountsByOwner", []any{
+		strings.TrimSpace(ownerAddress),
+		map[string]any{"mint": strings.TrimSpace(mintAddress)},
+		map[string]any{"encoding": "jsonParsed", "commitment": "confirmed"},
+	}, &out); err != nil {
+		r.ReportFailure(ep.Key, err)
+		return ports.BalanceResult{}, err
+	}
+	r.ReportSuccess(ep.Key)
+	balance, err := out.totalAmount()
+	if err != nil {
+		return ports.BalanceResult{}, err
+	}
+	return ports.BalanceResult{
+		Balance: balance,
 		Network: strings.ToLower(strings.TrimSpace(network)),
 	}, nil
 }
@@ -359,6 +385,40 @@ type solanaRPCError struct {
 
 type solanaBalanceResult struct {
 	Value int64 `json:"value"`
+}
+
+type solanaTokenAccountsByOwnerResult struct {
+	Value []solanaTokenAccountEntry `json:"value"`
+}
+
+type solanaTokenAccountEntry struct {
+	Account struct {
+		Data struct {
+			Parsed struct {
+				Info struct {
+					TokenAmount struct {
+						Amount string `json:"amount"`
+					} `json:"tokenAmount"`
+				} `json:"info"`
+			} `json:"parsed"`
+		} `json:"data"`
+	} `json:"account"`
+}
+
+func (r solanaTokenAccountsByOwnerResult) totalAmount() (string, error) {
+	total := new(big.Int)
+	for _, item := range r.Value {
+		amount := strings.TrimSpace(item.Account.Data.Parsed.Info.TokenAmount.Amount)
+		if amount == "" {
+			continue
+		}
+		value, ok := new(big.Int).SetString(amount, 10)
+		if !ok {
+			return "", fmt.Errorf("invalid token amount: %s", amount)
+		}
+		total.Add(total, value)
+	}
+	return total.String(), nil
 }
 
 type solanaSignatureStatusResult struct {

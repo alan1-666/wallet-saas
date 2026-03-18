@@ -3,7 +3,9 @@ package chain
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	pb "wallet-saas-v2/services/wallet-core/internal/pb/chaingateway"
 	"wallet-saas-v2/services/wallet-core/internal/ports"
@@ -36,10 +38,9 @@ func (g *GRPCChain) BuildUnsignedTx(ctx context.Context, params ports.BuildUnsig
 	if params.Chain == "" || params.Network == "" {
 		return ports.BuildUnsignedResult{}, fmt.Errorf("chain and network are required")
 	}
-	base64Tx := params.Base64Tx
-	if base64Tx == "" {
-		raw := params.Chain + ":" + params.From + ":" + params.To + ":" + params.Amount
-		base64Tx = base64.StdEncoding.EncodeToString([]byte(raw))
+	base64Tx, err := buildBase64Tx(params)
+	if err != nil {
+		return ports.BuildUnsignedResult{}, err
 	}
 	vin := make([]*pb.TxVin, 0, len(params.Vin))
 	for _, x := range params.Vin {
@@ -68,6 +69,44 @@ func (g *GRPCChain) BuildUnsignedTx(ctx context.Context, params ports.BuildUnsig
 	return ports.BuildUnsignedResult{UnsignedTx: resp.GetUnsignedTx(), SignHashes: resp.GetSignHashes()}, nil
 }
 
+type accountTxPayload struct {
+	ContractAddress string `json:"contract_address,omitempty"`
+	FromAddress     string `json:"from_address"`
+	ToAddress       string `json:"to_address"`
+	Value           string `json:"value"`
+	AmountUnit      string `json:"amount_unit,omitempty"`
+	TokenDecimals   uint32 `json:"token_decimals,omitempty"`
+}
+
+func buildBase64Tx(params ports.BuildUnsignedParams) (string, error) {
+	if strings.TrimSpace(params.Base64Tx) != "" {
+		return strings.TrimSpace(params.Base64Tx), nil
+	}
+	if strings.TrimSpace(params.Chain) == "" {
+		return "", fmt.Errorf("chain is required")
+	}
+	if strings.TrimSpace(params.From) == "" || strings.TrimSpace(params.To) == "" || strings.TrimSpace(params.Amount) == "" {
+		return "", fmt.Errorf("from/to/amount are required")
+	}
+	if strings.EqualFold(strings.TrimSpace(params.Chain), "solana") && (strings.TrimSpace(params.ContractAddress) != "" || strings.TrimSpace(params.AmountUnit) != "" || params.TokenDecimals > 0) {
+		payload := accountTxPayload{
+			ContractAddress: strings.TrimSpace(params.ContractAddress),
+			FromAddress:     strings.TrimSpace(params.From),
+			ToAddress:       strings.TrimSpace(params.To),
+			Value:           strings.TrimSpace(params.Amount),
+			AmountUnit:      strings.TrimSpace(params.AmountUnit),
+			TokenDecimals:   params.TokenDecimals,
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return "", err
+		}
+		return base64.StdEncoding.EncodeToString(raw), nil
+	}
+	raw := params.Chain + ":" + params.From + ":" + params.To + ":" + params.Amount
+	return base64.StdEncoding.EncodeToString([]byte(raw)), nil
+}
+
 func (g *GRPCChain) Broadcast(ctx context.Context, params ports.BroadcastParams) (string, error) {
 	if params.Chain == "" || params.Network == "" {
 		return "", fmt.Errorf("chain and network are required")
@@ -88,6 +127,27 @@ func (g *GRPCChain) Broadcast(ctx context.Context, params ports.BroadcastParams)
 		return "", fmt.Errorf("empty tx hash")
 	}
 	return resp.GetTxHash(), nil
+}
+
+func (g *GRPCChain) GetBalance(ctx context.Context, chain, coin, network, address, contractAddress string) (ports.ChainBalance, error) {
+	if chain == "" || network == "" {
+		return ports.ChainBalance{}, fmt.Errorf("chain and network are required")
+	}
+	resp, err := g.client.GetBalance(ctx, &pb.BalanceRequest{
+		Chain:           chain,
+		Coin:            coin,
+		Network:         network,
+		Address:         address,
+		ContractAddress: contractAddress,
+	})
+	if err != nil {
+		return ports.ChainBalance{}, err
+	}
+	return ports.ChainBalance{
+		Balance:  resp.GetBalance(),
+		Network:  resp.GetNetwork(),
+		Sequence: resp.GetSequence(),
+	}, nil
 }
 
 func (g *GRPCChain) ConvertAddress(ctx context.Context, chain, network, addrType, publicKey string) (string, error) {

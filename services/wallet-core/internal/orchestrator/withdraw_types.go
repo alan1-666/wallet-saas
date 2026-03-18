@@ -14,8 +14,7 @@ type WithdrawRequest struct {
 	AccountID     string
 	OrderID       string
 	RequiredConfs int64
-	KeyID         string
-	KeyIDs        []string
+	Signers       []ports.SignerRef
 	SignType      string
 	Tx            ports.BuildUnsignedParams
 }

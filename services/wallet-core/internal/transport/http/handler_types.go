@@ -23,16 +23,19 @@ type CreateWithdrawRequest struct {
 	KeyIDs    []string `json:"key_ids"`
 	SignType  string   `json:"sign_type"`
 
-	Chain    string `json:"chain"`
-	Network  string `json:"network"`
-	Coin     string `json:"coin"`
-	From     string `json:"from"`
-	To       string `json:"to"`
-	Amount   string `json:"amount"`
-	Base64Tx string `json:"base64_tx"`
-	Fee      string `json:"fee"`
-	Vin      []vin  `json:"vin"`
-	Vout     []vout `json:"vout"`
+	Chain           string `json:"chain"`
+	Network         string `json:"network"`
+	Coin            string `json:"coin"`
+	From            string `json:"from"`
+	To              string `json:"to"`
+	Amount          string `json:"amount"`
+	ContractAddress string `json:"contract_address"`
+	AmountUnit      string `json:"amount_unit"`
+	TokenDecimals   uint32 `json:"token_decimals"`
+	Base64Tx        string `json:"base64_tx"`
+	Fee             string `json:"fee"`
+	Vin             []vin  `json:"vin"`
+	Vout            []vout `json:"vout"`
 }
 
 type DepositNotifyRequest struct {
@@ -135,16 +138,20 @@ type CreateAddressRequest struct {
 }
 
 type CreateAddressResponse struct {
-	TenantID    string `json:"tenant_id"`
-	AccountID   string `json:"account_id"`
-	Chain       string `json:"chain"`
-	Coin        string `json:"coin"`
-	Network     string `json:"network"`
-	Model       string `json:"model"`
-	PublicKey   string `json:"public_key"`
-	Address     string `json:"address"`
-	SignType    string `json:"sign_type"`
-	AddressType string `json:"address_type"`
+	TenantID       string `json:"tenant_id"`
+	AccountID      string `json:"account_id"`
+	Chain          string `json:"chain"`
+	Coin           string `json:"coin"`
+	Network        string `json:"network"`
+	Model          string `json:"model"`
+	KeyID          string `json:"key_id"`
+	PublicKey      string `json:"public_key"`
+	Address        string `json:"address"`
+	SignType       string `json:"sign_type"`
+	AddressType    string `json:"address_type"`
+	DerivationPath string `json:"derivation_path"`
+	ChangeIndex    int64  `json:"change_index"`
+	AddressIndex   int64  `json:"address_index"`
 }
 
 type AccountUpsertRequest struct {

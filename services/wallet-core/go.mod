@@ -3,6 +3,7 @@ module wallet-saas-v2/services/wallet-core
 go 1.26.0
 
 require (
+	github.com/gagliardetto/solana-go v1.14.0
 	github.com/lib/pq v1.10.9
 	google.golang.org/grpc v1.67.1
 	google.golang.org/protobuf v1.35.1

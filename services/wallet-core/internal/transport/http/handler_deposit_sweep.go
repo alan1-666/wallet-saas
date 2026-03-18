@@ -111,8 +111,11 @@ func (h *WithdrawHandler) SweepRun(w http.ResponseWriter, r *http.Request) {
 		AccountID:     req.FromAccountID,
 		OrderID:       req.SweepOrderID,
 		RequiredConfs: requiredConfs,
-		KeyID:         fromAddr.PublicKey,
-		SignType:      fromAddr.SignType,
+		Signers: []ports.SignerRef{{
+			KeyID:     fromAddr.KeyID,
+			PublicKey: fromAddr.PublicKey,
+		}},
+		SignType: fromAddr.SignType,
 		Tx: ports.BuildUnsignedParams{
 			Chain:   req.Chain,
 			Network: req.Network,

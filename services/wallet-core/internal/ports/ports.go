@@ -26,13 +26,20 @@ type SignPort interface {
 	SignMessage(ctx context.Context, signType, keyID, messageHash string) (string, error)
 }
 
-type PublicKeyPair struct {
-	CompressPubkey   string
-	DecompressPubkey string
+type DerivedKey struct {
+	KeyID              string
+	PublicKey          string
+	AlternatePublicKey string
+	DerivationPath     string
 }
 
 type KeyManagePort interface {
-	ExportPublicKeys(ctx context.Context, signType string, number int32) ([]PublicKeyPair, error)
+	DeriveKey(ctx context.Context, signType, keyID string) (DerivedKey, error)
+}
+
+type SignerRef struct {
+	KeyID     string
+	PublicKey string
 }
 
 type TxVin struct {
@@ -49,21 +56,30 @@ type TxVout struct {
 }
 
 type BuildUnsignedParams struct {
-	Chain    string
-	Network  string
-	Coin     string
-	From     string
-	To       string
-	Amount   string
-	Base64Tx string
-	Fee      string
-	Vin      []TxVin
-	Vout     []TxVout
+	Chain           string
+	Network         string
+	Coin            string
+	From            string
+	To              string
+	Amount          string
+	Base64Tx        string
+	ContractAddress string
+	AmountUnit      string
+	TokenDecimals   uint32
+	Fee             string
+	Vin             []TxVin
+	Vout            []TxVout
 }
 
 type BuildUnsignedResult struct {
 	UnsignedTx string
 	SignHashes []string
+}
+
+type ChainBalance struct {
+	Balance  string
+	Network  string
+	Sequence string
 }
 
 type RiskDecision struct {
@@ -169,6 +185,7 @@ type IdempotencyPort interface {
 type ChainPort interface {
 	BuildUnsignedTx(ctx context.Context, params BuildUnsignedParams) (BuildUnsignedResult, error)
 	Broadcast(ctx context.Context, params BroadcastParams) (string, error)
+	GetBalance(ctx context.Context, chain, coin, network, address, contractAddress string) (ChainBalance, error)
 }
 
 type ChainAddressPort interface {
@@ -183,8 +200,13 @@ type WatchAddressInput struct {
 	Coin              string
 	Network           string
 	Address           string
+	KeyID             string
 	PublicKey         string
 	SignType          string
+	AddressType       string
+	DerivationPath    string
+	ChangeIndex       int64
+	AddressIndex      int64
 	MinConfirmations  int64
 	TreasuryAccountID string
 	AutoSweep         bool
@@ -202,18 +224,23 @@ type WalletAccount struct {
 }
 
 type WalletAddress struct {
-	TenantID  string `json:"tenant_id"`
-	AccountID string `json:"account_id"`
-	Model     string `json:"model"`
-	Chain     string `json:"chain"`
-	Coin      string `json:"coin"`
-	Network   string `json:"network"`
-	Address   string `json:"address"`
-	PublicKey string `json:"public_key"`
-	SignType  string `json:"sign_type"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	TenantID       string `json:"tenant_id"`
+	AccountID      string `json:"account_id"`
+	Model          string `json:"model"`
+	Chain          string `json:"chain"`
+	Coin           string `json:"coin"`
+	Network        string `json:"network"`
+	Address        string `json:"address"`
+	KeyID          string `json:"key_id"`
+	PublicKey      string `json:"public_key"`
+	SignType       string `json:"sign_type"`
+	AddressType    string `json:"address_type"`
+	DerivationPath string `json:"derivation_path"`
+	ChangeIndex    int64  `json:"change_index"`
+	AddressIndex   int64  `json:"address_index"`
+	Status         string `json:"status"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
 }
 
 type ChainMetadata struct {
@@ -235,11 +262,28 @@ type ChainPolicy struct {
 	Enabled               bool   `json:"enabled"`
 }
 
+type PrepareAddressInput struct {
+	TenantID    string
+	AccountID   string
+	Model       string
+	Chain       string
+	Network     string
+	SignType    string
+	AddressType string
+}
+
+type PreparedAddress struct {
+	WalletAddress
+	Existing bool
+}
+
 type AddressRegistryPort interface {
 	UpsertAccount(ctx context.Context, in WalletAccount) (WalletAccount, error)
 	GetAccount(ctx context.Context, tenantID, accountID string) (WalletAccount, error)
 	ListAccounts(ctx context.Context, tenantID string, limit, offset int) ([]WalletAccount, error)
 	ListAccountAddresses(ctx context.Context, tenantID, accountID string) ([]WalletAddress, error)
+	PrepareAddress(ctx context.Context, in PrepareAddressInput) (PreparedAddress, error)
+	GetAccountAddressByKeyID(ctx context.Context, tenantID, accountID, keyID string) (WalletAddress, error)
 	GetChainMetadata(ctx context.Context, chain, network string) (ChainMetadata, error)
 	GetChainPolicy(ctx context.Context, chain, network string) (ChainPolicy, error)
 	UpsertWatchAddress(ctx context.Context, in WatchAddressInput) error

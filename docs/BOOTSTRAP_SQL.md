@@ -15,8 +15,8 @@ ON CONFLICT (token) DO NOTHING;
 ```sql
 INSERT INTO tenant_keys (tenant_id, key_id, status)
 VALUES
-  ('t1', 'pubkey_t1_main', 'ACTIVE'),
-  ('t1', 'pubkey_t1_utxo_1', 'ACTIVE')
+  ('t1', 'hd:ecdsa:ethereum:1:0:0', 'ACTIVE'),
+  ('t1', 'hd:ecdsa:bitcoin:1:0:0', 'ACTIVE')
 ON CONFLICT (tenant_id, key_id) DO NOTHING;
 ```
 

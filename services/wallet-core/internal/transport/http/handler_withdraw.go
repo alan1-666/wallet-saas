@@ -1,8 +1,10 @@
 package httptransport
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -22,6 +24,10 @@ func (h *WithdrawHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.TenantID == "" || req.AccountID == "" || req.OrderID == "" || req.Chain == "" || req.Network == "" || req.Coin == "" || req.Amount == "" {
 		http.Error(w, "tenant_id/account_id/order_id/chain/network/coin/amount are required", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.KeyID) == "" && len(req.KeyIDs) == 0 {
+		http.Error(w, "key_id or key_ids are required", http.StatusBadRequest)
 		return
 	}
 	if !h.ensureAccountActive(w, r, req.TenantID, req.AccountID, "withdraw") {
@@ -67,16 +73,19 @@ func (h *WithdrawHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tx := ports.BuildUnsignedParams{
-		Chain:    req.Chain,
-		Network:  req.Network,
-		Coin:     req.Coin,
-		From:     req.From,
-		To:       req.To,
-		Amount:   req.Amount,
-		Base64Tx: req.Base64Tx,
-		Fee:      req.Fee,
-		Vin:      make([]ports.TxVin, 0, len(req.Vin)),
-		Vout:     make([]ports.TxVout, 0, len(req.Vout)),
+		Chain:           req.Chain,
+		Network:         req.Network,
+		Coin:            req.Coin,
+		From:            req.From,
+		To:              req.To,
+		Amount:          req.Amount,
+		ContractAddress: req.ContractAddress,
+		AmountUnit:      req.AmountUnit,
+		TokenDecimals:   req.TokenDecimals,
+		Base64Tx:        req.Base64Tx,
+		Fee:             req.Fee,
+		Vin:             make([]ports.TxVin, 0, len(req.Vin)),
+		Vout:            make([]ports.TxVout, 0, len(req.Vout)),
 	}
 	for _, x := range req.Vin {
 		tx.Vin = append(tx.Vin, ports.TxVin{Hash: x.Hash, Index: x.Index, Amount: x.Amount, Address: x.Address})
@@ -84,14 +93,18 @@ func (h *WithdrawHandler) Create(w http.ResponseWriter, r *http.Request) {
 	for _, x := range req.Vout {
 		tx.Vout = append(tx.Vout, ports.TxVout{Address: x.Address, Amount: x.Amount, Index: x.Index})
 	}
+	signers, err := h.resolveWithdrawSigners(r.Context(), req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	txHash, err := h.Orchestrator.CreateAndBroadcast(r.Context(), orchestrator.WithdrawRequest{
 		TenantID:      req.TenantID,
 		AccountID:     req.AccountID,
 		OrderID:       req.OrderID,
 		RequiredConfs: requiredConfs,
-		KeyID:         req.KeyID,
-		KeyIDs:        req.KeyIDs,
+		Signers:       signers,
 		SignType:      req.SignType,
 		Tx:            tx,
 	})
@@ -102,6 +115,38 @@ func (h *WithdrawHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(CreateWithdrawResponse{TxHash: txHash})
+}
+
+func (h *WithdrawHandler) resolveWithdrawSigners(ctx context.Context, req CreateWithdrawRequest) ([]ports.SignerRef, error) {
+	keyIDs := make([]string, 0, 1+len(req.KeyIDs))
+	if strings.TrimSpace(req.KeyID) != "" {
+		keyIDs = append(keyIDs, strings.TrimSpace(req.KeyID))
+	}
+	for _, keyID := range req.KeyIDs {
+		keyID = strings.TrimSpace(keyID)
+		if keyID == "" {
+			continue
+		}
+		keyIDs = append(keyIDs, keyID)
+	}
+	if len(keyIDs) == 0 {
+		return nil, fmt.Errorf("missing key id")
+	}
+	signers := make([]ports.SignerRef, 0, len(keyIDs))
+	for _, keyID := range keyIDs {
+		addr, err := h.findAccountAddressByKeyID(ctx, req.TenantID, req.AccountID, keyID)
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(addr.PublicKey) == "" {
+			return nil, fmt.Errorf("public key not found for key_id=%s", keyID)
+		}
+		signers = append(signers, ports.SignerRef{
+			KeyID:     keyID,
+			PublicKey: addr.PublicKey,
+		})
+	}
+	return signers, nil
 }
 
 func (h *WithdrawHandler) WithdrawOnchainNotify(w http.ResponseWriter, r *http.Request) {

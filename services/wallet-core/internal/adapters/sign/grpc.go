@@ -36,9 +36,10 @@ func (s *GRPCSign) SignMessage(ctx context.Context, signType, keyID, messageHash
 		signType = "eddsa"
 	}
 	resp, err := s.client.SignTxMessage(ctx, &pb.SignTxMessageRequest{
-		Type:        signType,
-		PublicKey:   keyID,
-		MessageHash: messageHash,
+		ConsumerToken: keyID,
+		Type:          signType,
+		PublicKey:     keyID,
+		MessageHash:   messageHash,
 	})
 	if err != nil {
 		return "", err
@@ -49,29 +50,28 @@ func (s *GRPCSign) SignMessage(ctx context.Context, signType, keyID, messageHash
 	return resp.GetSignature(), nil
 }
 
-func (s *GRPCSign) ExportPublicKeys(ctx context.Context, signType string, number int32) ([]ports.PublicKeyPair, error) {
+func (s *GRPCSign) DeriveKey(ctx context.Context, signType, keyID string) (ports.DerivedKey, error) {
 	if signType == "" {
 		signType = "ecdsa"
 	}
-	if number <= 0 {
-		number = 1
-	}
 	resp, err := s.client.ExportPublicKeyList(ctx, &pb.ExportPublicKeyRequest{
-		Type:   signType,
-		Number: uint64(number),
+		ConsumerToken: keyID,
+		Type:          signType,
+		Number:        1,
 	})
 	if err != nil {
-		return nil, err
+		return ports.DerivedKey{}, err
 	}
 	if resp.GetCode() != "1" {
-		return nil, fmt.Errorf("sign service error: %s", resp.GetMsg())
+		return ports.DerivedKey{}, fmt.Errorf("sign service error: %s", resp.GetMsg())
 	}
-	out := make([]ports.PublicKeyPair, 0, len(resp.GetPublicKey()))
-	for _, item := range resp.GetPublicKey() {
-		out = append(out, ports.PublicKeyPair{
-			CompressPubkey:   item.GetCompressPubkey(),
-			DecompressPubkey: item.GetDecompressPubkey(),
-		})
+	if len(resp.GetPublicKey()) == 0 {
+		return ports.DerivedKey{}, fmt.Errorf("empty derived key response")
 	}
-	return out, nil
+	item := resp.GetPublicKey()[0]
+	return ports.DerivedKey{
+		KeyID:              keyID,
+		PublicKey:          item.GetCompressPubkey(),
+		AlternatePublicKey: item.GetDecompressPubkey(),
+	}, nil
 }

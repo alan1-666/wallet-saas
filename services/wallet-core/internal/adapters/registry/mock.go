@@ -48,7 +48,69 @@ func (m *MockRegistry) ListAccountAddresses(_ context.Context, tenantID, account
 	if tenantID == "" || accountID == "" {
 		return nil, fmt.Errorf("tenant_id/account_id is required")
 	}
-	return []ports.WalletAddress{}, nil
+	return []ports.WalletAddress{
+		{
+			TenantID:       tenantID,
+			AccountID:      accountID,
+			Model:          "account",
+			Chain:          "ethereum",
+			Coin:           "ETH",
+			Network:        "mainnet",
+			Address:        "0xmock",
+			KeyID:          "hd:ecdsa:ethereum:1:0:0",
+			PublicKey:      "04mock",
+			SignType:       "ecdsa",
+			DerivationPath: "m/44'/60'/1'/0/0",
+			AddressIndex:   0,
+			ChangeIndex:    0,
+			Status:         "ACTIVE",
+		},
+	}, nil
+}
+
+func (m *MockRegistry) PrepareAddress(_ context.Context, in ports.PrepareAddressInput) (ports.PreparedAddress, error) {
+	if in.TenantID == "" || in.AccountID == "" || in.Chain == "" || in.Network == "" || in.SignType == "" {
+		return ports.PreparedAddress{}, fmt.Errorf("tenant_id/account_id/chain/network/sign_type are required")
+	}
+	return ports.PreparedAddress{
+		WalletAddress: ports.WalletAddress{
+			TenantID:       in.TenantID,
+			AccountID:      in.AccountID,
+			Model:          in.Model,
+			Chain:          in.Chain,
+			Network:        in.Network,
+			KeyID:          fmt.Sprintf("hd:%s:%s:1:0:0", in.SignType, in.Chain),
+			SignType:       in.SignType,
+			AddressType:    in.AddressType,
+			DerivationPath: "m/44'/60'/1'/0/0",
+			ChangeIndex:    0,
+			AddressIndex:   0,
+			Status:         "ACTIVE",
+		},
+		Existing: false,
+	}, nil
+}
+
+func (m *MockRegistry) GetAccountAddressByKeyID(_ context.Context, tenantID, accountID, keyID string) (ports.WalletAddress, error) {
+	if tenantID == "" || accountID == "" || keyID == "" {
+		return ports.WalletAddress{}, fmt.Errorf("tenant_id/account_id/key_id is required")
+	}
+	return ports.WalletAddress{
+		TenantID:       tenantID,
+		AccountID:      accountID,
+		Model:          "account",
+		Chain:          "ethereum",
+		Coin:           "ETH",
+		Network:        "mainnet",
+		Address:        "0xmock",
+		KeyID:          keyID,
+		PublicKey:      "04mock",
+		SignType:       "ecdsa",
+		DerivationPath: "m/44'/60'/1'/0/0",
+		AddressIndex:   0,
+		ChangeIndex:    0,
+		Status:         "ACTIVE",
+	}, nil
 }
 
 func (m *MockRegistry) GetChainMetadata(_ context.Context, chain, network string) (ports.ChainMetadata, error) {
