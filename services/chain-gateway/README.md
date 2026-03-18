@@ -50,6 +50,9 @@ UTXO response includes:
 - `CHAIN_GATEWAY_ENDPOINT_PROBE_SECONDS` (default `20`)
 - `CHAIN_GATEWAY_ENDPOINT_FAIL_THRESHOLD` (default `3`)
 - `CHAIN_GATEWAY_ENDPOINT_OPEN_SECONDS` (default `30`)
+- `CHAIN_GATEWAY_ACCOUNT_*_NETWORK` (optional per-chain network preference when loading account RPC from DB)
+  - e.g. `CHAIN_GATEWAY_ACCOUNT_SOL_NETWORK=devnet`
+  - e.g. `CHAIN_GATEWAY_ACCOUNT_TRON_NETWORK=nile`
 
 ## Control plane
 - SQL schema and seed examples: `/docs/CONTROL_PLANE_SCHEMA.md`

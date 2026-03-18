@@ -322,46 +322,84 @@ func applyAccountRPCFromDB(ctx context.Context, store controlplane.RPCEndpointSt
 		return
 	}
 
-	targetNetwork := strings.ToLower(strings.TrimSpace(cfg.NetWork))
-	loaded := make(map[string]bool)
-	for _, item := range items {
-		if strings.ToLower(strings.TrimSpace(item.Model)) != string(ports.ModelAccount) {
-			continue
-		}
-		if targetNetwork != "" && strings.ToLower(strings.TrimSpace(item.Network)) != targetNetwork {
-			continue
-		}
+	// For account-model non-EVM plugins we keep one rpc url per chain.
+	// Prefer per-chain configured network first; fallback to first ACTIVE endpoint for that chain.
+	preferredNet := map[string]string{
+		"solana": strings.ToLower(strings.TrimSpace(firstNonEmpty(os.Getenv("CHAIN_GATEWAY_ACCOUNT_SOL_NETWORK"), cfg.NetWork))),
+		"tron":   strings.ToLower(strings.TrimSpace(firstNonEmpty(os.Getenv("CHAIN_GATEWAY_ACCOUNT_TRON_NETWORK"), cfg.NetWork))),
+		"cosmos": strings.ToLower(strings.TrimSpace(firstNonEmpty(os.Getenv("CHAIN_GATEWAY_ACCOUNT_COSMOS_NETWORK"), cfg.NetWork))),
+		"aptos":  strings.ToLower(strings.TrimSpace(firstNonEmpty(os.Getenv("CHAIN_GATEWAY_ACCOUNT_APTOS_NETWORK"), cfg.NetWork))),
+		"sui":    strings.ToLower(strings.TrimSpace(firstNonEmpty(os.Getenv("CHAIN_GATEWAY_ACCOUNT_SUI_NETWORK"), cfg.NetWork))),
+		"ton":    strings.ToLower(strings.TrimSpace(firstNonEmpty(os.Getenv("CHAIN_GATEWAY_ACCOUNT_TON_NETWORK"), cfg.NetWork))),
+		"xlm":    strings.ToLower(strings.TrimSpace(firstNonEmpty(os.Getenv("CHAIN_GATEWAY_ACCOUNT_XLM_NETWORK"), cfg.NetWork))),
+		"btt":    strings.ToLower(strings.TrimSpace(firstNonEmpty(os.Getenv("CHAIN_GATEWAY_ACCOUNT_BTT_NETWORK"), cfg.NetWork))),
+	}
 
-		chain := clients.NormalizeChain(item.Chain)
-		url := strings.TrimSpace(item.URL)
-		if chain == "" || url == "" || loaded[chain] {
-			continue
+	selectURL := func(chain string) string {
+		want := preferredNet[chain]
+		for _, item := range items {
+			if strings.ToLower(strings.TrimSpace(item.Model)) != string(ports.ModelAccount) {
+				continue
+			}
+			if clients.NormalizeChain(item.Chain) != chain {
+				continue
+			}
+			if want != "" && want != "*" && strings.ToLower(strings.TrimSpace(item.Network)) != want {
+				continue
+			}
+			if u := strings.TrimSpace(item.URL); u != "" {
+				return u
+			}
 		}
+		for _, item := range items {
+			if strings.ToLower(strings.TrimSpace(item.Model)) != string(ports.ModelAccount) {
+				continue
+			}
+			if clients.NormalizeChain(item.Chain) != chain {
+				continue
+			}
+			if u := strings.TrimSpace(item.URL); u != "" {
+				return u
+			}
+		}
+		return ""
+	}
 
-		switch chain {
-		case "solana":
-			cfg.WalletNode.Sol.RpcUrl = url
-		case "cosmos":
-			cfg.WalletNode.Cosmos.RpcUrl = url
-		case "tron":
-			cfg.WalletNode.Tron.RpcUrl = url
-		case "aptos":
-			cfg.WalletNode.Aptos.RpcUrl = url
-		case "sui":
-			cfg.WalletNode.Sui.RpcUrl = url
-		case "ton":
-			cfg.WalletNode.Ton.RpcUrl = url
-		case "xlm":
-			cfg.WalletNode.Xlm.RpcUrl = url
-		case "btt":
-			cfg.WalletNode.Btt.RpcUrl = url
-		default:
-			continue
-		}
-		loaded[chain] = true
+	loaded := make(map[string]string)
+	if u := selectURL("solana"); u != "" {
+		cfg.WalletNode.Sol.RpcUrl = u
+		loaded["solana"] = u
+	}
+	if u := selectURL("cosmos"); u != "" {
+		cfg.WalletNode.Cosmos.RpcUrl = u
+		loaded["cosmos"] = u
+	}
+	if u := selectURL("tron"); u != "" {
+		cfg.WalletNode.Tron.RpcUrl = u
+		loaded["tron"] = u
+	}
+	if u := selectURL("aptos"); u != "" {
+		cfg.WalletNode.Aptos.RpcUrl = u
+		loaded["aptos"] = u
+	}
+	if u := selectURL("sui"); u != "" {
+		cfg.WalletNode.Sui.RpcUrl = u
+		loaded["sui"] = u
+	}
+	if u := selectURL("ton"); u != "" {
+		cfg.WalletNode.Ton.RpcUrl = u
+		loaded["ton"] = u
+	}
+	if u := selectURL("xlm"); u != "" {
+		cfg.WalletNode.Xlm.RpcUrl = u
+		loaded["xlm"] = u
+	}
+	if u := selectURL("btt"); u != "" {
+		cfg.WalletNode.Btt.RpcUrl = u
+		loaded["btt"] = u
 	}
 
 	if len(loaded) > 0 {
-		log.Printf("chain-gateway loaded account rpc from db network=%s chains=%d", targetNetwork, len(loaded))
+		log.Printf("chain-gateway loaded account rpc from db chains=%d", len(loaded))
 	}
 }
