@@ -78,6 +78,17 @@ type accountTxPayload struct {
 	TokenDecimals   uint32 `json:"token_decimals,omitempty"`
 }
 
+type evmDynamicFeePayload struct {
+	ChainID              string `json:"chainId"`
+	Nonce                uint64 `json:"nonce"`
+	MaxPriorityFeePerGas string `json:"maxPriorityFeePerGas"`
+	MaxFeePerGas         string `json:"maxFeePerGas"`
+	GasLimit             uint64 `json:"gasLimit"`
+	ToAddress            string `json:"toAddress"`
+	Amount               string `json:"amount"`
+	ContractAddress      string `json:"contractAddress,omitempty"`
+}
+
 func buildBase64Tx(params ports.BuildUnsignedParams) (string, error) {
 	if strings.TrimSpace(params.Base64Tx) != "" {
 		return strings.TrimSpace(params.Base64Tx), nil
@@ -88,7 +99,36 @@ func buildBase64Tx(params ports.BuildUnsignedParams) (string, error) {
 	if strings.TrimSpace(params.From) == "" || strings.TrimSpace(params.To) == "" || strings.TrimSpace(params.Amount) == "" {
 		return "", fmt.Errorf("from/to/amount are required")
 	}
-	if strings.EqualFold(strings.TrimSpace(params.Chain), "solana") && (strings.TrimSpace(params.ContractAddress) != "" || strings.TrimSpace(params.AmountUnit) != "" || params.TokenDecimals > 0) {
+
+	chain := normalizeChain(params.Chain)
+	network := strings.ToLower(strings.TrimSpace(params.Network))
+
+	if isEVMChain(chain) {
+		chainID, err := evmChainID(chain, network)
+		if err != nil {
+			return "", err
+		}
+		payload := evmDynamicFeePayload{
+			ChainID:              chainID,
+			Nonce:                0,
+			MaxPriorityFeePerGas: "1000000000",  // 1 gwei
+			MaxFeePerGas:         "20000000000", // 20 gwei
+			GasLimit:             21000,
+			ToAddress:            strings.TrimSpace(params.To),
+			Amount:               strings.TrimSpace(params.Amount),
+			ContractAddress:      strings.TrimSpace(params.ContractAddress),
+		}
+		if payload.ContractAddress != "" {
+			payload.GasLimit = 100000
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return "", err
+		}
+		return base64.StdEncoding.EncodeToString(raw), nil
+	}
+
+	if chain == "solana" && (strings.TrimSpace(params.ContractAddress) != "" || strings.TrimSpace(params.AmountUnit) != "" || params.TokenDecimals > 0) {
 		payload := accountTxPayload{
 			ContractAddress: strings.TrimSpace(params.ContractAddress),
 			FromAddress:     strings.TrimSpace(params.From),
@@ -103,8 +143,69 @@ func buildBase64Tx(params ports.BuildUnsignedParams) (string, error) {
 		}
 		return base64.StdEncoding.EncodeToString(raw), nil
 	}
-	raw := params.Chain + ":" + params.From + ":" + params.To + ":" + params.Amount
+	raw := chain + ":" + params.From + ":" + params.To + ":" + params.Amount
 	return base64.StdEncoding.EncodeToString([]byte(raw)), nil
+}
+
+func normalizeChain(v string) string {
+	x := strings.ToLower(strings.TrimSpace(v))
+	switch x {
+	case "eth":
+		return "ethereum"
+	case "bsc", "bnb":
+		return "binance"
+	case "matic":
+		return "polygon"
+	case "arb":
+		return "arbitrum"
+	default:
+		return x
+	}
+}
+
+func isEVMChain(chain string) bool {
+	switch normalizeChain(chain) {
+	case "ethereum", "binance", "polygon", "arbitrum", "optimism", "linea", "scroll", "mantle", "zksync":
+		return true
+	default:
+		return false
+	}
+}
+
+func evmChainID(chain, network string) (string, error) {
+	chain = normalizeChain(chain)
+	network = strings.ToLower(strings.TrimSpace(network))
+	switch chain {
+	case "ethereum":
+		switch network {
+		case "sepolia":
+			return "11155111", nil
+		case "mainnet", "":
+			return "1", nil
+		}
+	case "binance":
+		switch network {
+		case "testnet":
+			return "97", nil
+		case "mainnet", "":
+			return "56", nil
+		}
+	case "polygon":
+		switch network {
+		case "amoy":
+			return "80002", nil
+		case "mainnet", "":
+			return "137", nil
+		}
+	case "arbitrum":
+		switch network {
+		case "sepolia":
+			return "421614", nil
+		case "mainnet", "":
+			return "42161", nil
+		}
+	}
+	return "", fmt.Errorf("unsupported evm chain/network: %s/%s", chain, network)
 }
 
 func (g *GRPCChain) Broadcast(ctx context.Context, params ports.BroadcastParams) (string, error) {
