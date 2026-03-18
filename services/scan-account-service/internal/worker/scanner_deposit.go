@@ -215,7 +215,7 @@ func (s *Scanner) scanOneAccountGroup(ctx context.Context, group *watchGroup) er
 			}
 		}
 
-		if nextCursor == "" || nextCursor == currentCursor || len(txs) == 0 {
+		if nextCursor == "" || nextCursor == currentCursor {
 			break
 		}
 		currentCursor = nextCursor
@@ -283,7 +283,7 @@ func (s *Scanner) scanOneWatch(ctx context.Context, w store.WatchAddress, manage
 			}
 			lastTx = tx.TxHash
 		}
-		if nextCursor == "" || nextCursor == cursor || len(txs) == 0 || maxPages == 1 {
+		if nextCursor == "" || nextCursor == cursor || maxPages == 1 {
 			break
 		}
 		cursor = nextCursor
