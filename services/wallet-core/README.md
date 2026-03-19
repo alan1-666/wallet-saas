@@ -125,10 +125,10 @@ State orchestration and domain logic.
 - `api_tokens`, `tenant_keys`, `audit_logs`
 - `idem_requests`
 - `deposit_events`, `sweep_orders`
+- `ledger_audit_events`
 - `ledger_balances`, `ledger_journals`
 - `wallet_accounts`, `wallet_addresses`
 - `vault_balances`, `vault_journals`
-- optional legacy audit table: `risk_events` may still be written by deposit reorg handling when present
 
 ## Env
 - `WALLET_CORE_HOST` (default `0.0.0.0`)

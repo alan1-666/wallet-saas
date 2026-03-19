@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"math/big"
 	"strings"
 
@@ -526,7 +527,10 @@ ON CONFLICT (tenant_id, biz_type, biz_id, account_id, entry_side) DO NOTHING
 			return err
 		}
 		newCredited = false
-		_ = l.markReorgRiskTx(ctx, tx, in)
+		if err := l.recordReorgAuditEvent(ctx, tx, in); err != nil {
+			log.Printf("ledger audit event write failed tenant=%s account=%s order=%s tx=%s err=%v",
+				in.TenantID, in.AccountID, in.OrderID, in.TxHash, err)
+		}
 	}
 
 	_, err = tx.ExecContext(ctx, `
@@ -552,22 +556,20 @@ WHERE tenant_id=$13 AND order_id=$14
 	return tx.Commit()
 }
 
-func (l *PostgresLedger) markReorgRiskTx(ctx context.Context, tx *sql.Tx, in ports.DepositCreditInput) error {
+func (l *PostgresLedger) recordReorgAuditEvent(ctx context.Context, tx *sql.Tx, in ports.DepositCreditInput) error {
 	_, err := tx.ExecContext(ctx, `
-INSERT INTO risk_events (tenant_id, account_id, order_id, chain, coin, amount, rule_limit, decision)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-ON CONFLICT (tenant_id, order_id)
+INSERT INTO ledger_audit_events (tenant_id, account_id, order_id, chain, network, asset, amount, event_type, detail)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+ON CONFLICT (tenant_id, order_id, event_type)
 DO UPDATE SET
   account_id=EXCLUDED.account_id,
   chain=EXCLUDED.chain,
-  coin=EXCLUDED.coin,
+  network=EXCLUDED.network,
+  asset=EXCLUDED.asset,
   amount=EXCLUDED.amount,
-  rule_limit=EXCLUDED.rule_limit,
-  decision=EXCLUDED.decision
-`, in.TenantID, in.AccountID, in.OrderID, in.Chain, in.Coin, in.Amount, "REORG", "REORG_REVERTED")
-	if err != nil && strings.Contains(strings.ToLower(err.Error()), "risk_events") {
-		return nil
-	}
+  detail=EXCLUDED.detail,
+  updated_at=NOW()
+`, in.TenantID, in.AccountID, in.OrderID, in.Chain, in.Network, in.Coin, in.Amount, "DEPOSIT_REORG_REVERTED", strings.TrimSpace(in.TxHash))
 	return err
 }
 
@@ -859,9 +861,24 @@ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 UNIQUE (tenant_id, order_id)
 );`,
+		`CREATE TABLE IF NOT EXISTS ledger_audit_events (
+id BIGSERIAL PRIMARY KEY,
+tenant_id TEXT NOT NULL,
+account_id TEXT NOT NULL,
+order_id TEXT NOT NULL,
+chain TEXT NOT NULL DEFAULT '',
+network TEXT NOT NULL DEFAULT '',
+asset TEXT NOT NULL DEFAULT '',
+amount TEXT NOT NULL DEFAULT '0',
+event_type TEXT NOT NULL,
+detail TEXT NOT NULL DEFAULT '',
+created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+UNIQUE (tenant_id, order_id, event_type)
+);`,
 		`CREATE TABLE IF NOT EXISTS sweep_orders (
 id BIGSERIAL PRIMARY KEY,
-	tenant_id TEXT NOT NULL,
+		tenant_id TEXT NOT NULL,
 	sweep_order_id TEXT NOT NULL,
 	from_account_id TEXT NOT NULL,
 	treasury_account_id TEXT NOT NULL,
