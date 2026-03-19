@@ -7,7 +7,6 @@ import (
 
 type WithdrawHandler struct {
 	Orchestrator *orchestrator.WithdrawOrchestrator
-	Risk         ports.RiskPort
 	Ledger       ports.LedgerPort
 	Auth         ports.AuthPort
 	KeyManager   ports.KeyManagePort
@@ -105,7 +104,6 @@ type CreateWithdrawResponse struct {
 type WithdrawStatusResponse struct {
 	TenantID string             `json:"tenant_id"`
 	OrderID  string             `json:"order_id"`
-	Risk     ports.RiskDecision `json:"risk"`
 	Ledger   ports.LedgerStatus `json:"ledger"`
 }
 

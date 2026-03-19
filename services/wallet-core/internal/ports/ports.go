@@ -2,11 +2,6 @@ package ports
 
 import "context"
 
-type RiskPort interface {
-	CheckWithdraw(ctx context.Context, tenantID, accountID, orderID, chain, coin, amount string) (decision string, err error)
-	GetWithdrawDecision(ctx context.Context, tenantID, orderID string) (RiskDecision, error)
-}
-
 type LedgerPort interface {
 	FreezeWithdraw(ctx context.Context, tenantID, accountID, orderID, chain, network, asset, amount string, requiredConfs int64) error
 	ConfirmWithdraw(ctx context.Context, tenantID, accountID, orderID, txHash string) error
@@ -80,14 +75,6 @@ type ChainBalance struct {
 	Balance  string
 	Network  string
 	Sequence string
-}
-
-type RiskDecision struct {
-	Decision  string
-	Amount    string
-	Chain     string
-	Coin      string
-	RuleLimit string
 }
 
 type LedgerStatus struct {

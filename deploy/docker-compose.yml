@@ -29,7 +29,6 @@ services:
       SIGN_SERVICE_ADDR: "sign-service:9091"
       CHAIN_GATEWAY_GRPC_ADDR: "chain-gateway:9082"
       WALLET_DB_DSN: "postgres://wallet:wallet@postgres:5432/wallet?sslmode=disable"
-      RISK_MAX_WITHDRAW_AMOUNT: "1000000000000"
       GOCACHE: "/tmp/gocache"
       GOMODCACHE: "/tmp/gomodcache"
       GOPROXY: "https://goproxy.cn,direct"

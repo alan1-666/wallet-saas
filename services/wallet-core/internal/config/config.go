@@ -10,7 +10,6 @@ type Config struct {
 	SignServiceAddr  string
 	ChainGatewayGRPC string
 	PostgresDSN      string
-	RiskMaxAmount    string
 }
 
 func Load() Config {
@@ -36,16 +35,11 @@ func Load() Config {
 	}
 
 	postgresDSN := os.Getenv("WALLET_DB_DSN")
-	riskMaxAmount := os.Getenv("RISK_MAX_WITHDRAW_AMOUNT")
-	if riskMaxAmount == "" {
-		riskMaxAmount = "1000000000000"
-	}
 
 	return Config{
 		HTTPAddr:         host + ":" + strconv.Itoa(port),
 		SignServiceAddr:  signAddr,
 		ChainGatewayGRPC: chainGatewayGRPC,
 		PostgresDSN:      postgresDSN,
-		RiskMaxAmount:    riskMaxAmount,
 	}
 }

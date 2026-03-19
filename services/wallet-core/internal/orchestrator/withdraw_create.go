@@ -6,9 +6,6 @@ import (
 )
 
 func (o *WithdrawOrchestrator) CreateAndBroadcast(ctx context.Context, req WithdrawRequest) (txHash string, err error) {
-	if err := o.checkRisk(ctx, req); err != nil {
-		return "", err
-	}
 	if err := o.ensureChainFunds(ctx, req); err != nil {
 		return "", err
 	}

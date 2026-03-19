@@ -119,12 +119,7 @@ State orchestration and domain logic.
 - broadcast success: `ConfirmWithdraw`
 - broadcast failure (or sign/build failure): `ReleaseWithdraw`
 - on-chain confirmation threshold for withdraw/sweep is taken from `chain_metadata.min_confirmations`
-
-### Risk rules
-- Table: `risk_rules`
-- Match priority: `tenant_id > chain > coin > priority` (supports `*` wildcard).
-- Default rule: `(*,*,*)` uses `RISK_MAX_WITHDRAW_AMOUNT`.
-- Account-level table: `account_risk_limits` (`tenant_id + account_id + chain + coin`) can further narrow per-account withdraw limits.
+- business risk controls are intentionally out of scope for wallet-core; projects should approve/deny withdrawals before calling the SaaS APIs
 
 ## New tables
 - `api_tokens`, `tenant_keys`, `audit_logs`
@@ -133,12 +128,11 @@ State orchestration and domain logic.
 - `ledger_balances`, `ledger_journals`
 - `wallet_accounts`, `wallet_addresses`
 - `vault_balances`, `vault_journals`
-- `risk_rules`, `account_risk_limits`, `risk_events`
+- optional legacy audit table: `risk_events` may still be written by deposit reorg handling when present
 
 ## Env
 - `WALLET_CORE_HOST` (default `0.0.0.0`)
 - `WALLET_CORE_PORT` (default `8081`)
 - `SIGN_SERVICE_ADDR` (default `127.0.0.1:9091`)
 - `CHAIN_GATEWAY_GRPC_ADDR` (default `127.0.0.1:9082`, internal call path)
-- `WALLET_DB_DSN` (optional, enables postgres risk+ledger adapters)
-- `RISK_MAX_WITHDRAW_AMOUNT` (default `1000000000000`)
+- `WALLET_DB_DSN` (optional, enables postgres-backed ledger/auth/registry adapters)

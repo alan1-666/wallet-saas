@@ -200,11 +200,6 @@ func (h *WithdrawHandler) Status(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	riskDecision, riskErr := h.Risk.GetWithdrawDecision(r.Context(), tenantID, orderID)
-	if riskErr != nil && riskErr != sql.ErrNoRows {
-		http.Error(w, riskErr.Error(), http.StatusInternalServerError)
-		return
-	}
 	ledgerStatus, ledgerErr := h.Ledger.GetWithdrawStatus(r.Context(), tenantID, orderID)
 	if ledgerErr != nil && ledgerErr != sql.ErrNoRows {
 		http.Error(w, ledgerErr.Error(), http.StatusInternalServerError)
@@ -219,7 +214,6 @@ func (h *WithdrawHandler) Status(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(WithdrawStatusResponse{
 		TenantID: tenantID,
 		OrderID:  orderID,
-		Risk:     riskDecision,
 		Ledger:   ledgerStatus,
 	})
 }

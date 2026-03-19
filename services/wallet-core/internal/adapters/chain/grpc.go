@@ -206,6 +206,41 @@ func evmChainID(chain, network string) (string, error) {
 		case "mainnet", "":
 			return "42161", nil
 		}
+	case "optimism":
+		switch network {
+		case "sepolia":
+			return "11155420", nil
+		case "mainnet", "":
+			return "10", nil
+		}
+	case "linea":
+		switch network {
+		case "sepolia":
+			return "59141", nil
+		case "mainnet", "":
+			return "59144", nil
+		}
+	case "scroll":
+		switch network {
+		case "sepolia":
+			return "534351", nil
+		case "mainnet", "":
+			return "534352", nil
+		}
+	case "mantle":
+		switch network {
+		case "sepolia":
+			return "5003", nil
+		case "mainnet", "":
+			return "5000", nil
+		}
+	case "zksync":
+		switch network {
+		case "sepolia":
+			return "300", nil
+		case "mainnet", "":
+			return "324", nil
+		}
 	}
 	return "", fmt.Errorf("unsupported evm chain/network: %s/%s", chain, network)
 }

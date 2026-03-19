@@ -20,25 +20,9 @@ VALUES
 ON CONFLICT (tenant_id, key_id) DO NOTHING;
 ```
 
-## 3) Risk rules
-
-```sql
-INSERT INTO risk_rules (tenant_id, chain, coin, max_amount, priority, status)
-VALUES
-  ('t1', 'bitcoin', 'BTC', '500000000', 20, 'ACTIVE'),
-  ('t1', 'ethereum', 'ETH', '1000000000000000000', 20, 'ACTIVE'),
-  ('*', '*', '*', '1000000000000', 0, 'ACTIVE')
-ON CONFLICT (tenant_id, chain, coin) DO UPDATE
-SET max_amount = EXCLUDED.max_amount,
-    priority = EXCLUDED.priority,
-    status = EXCLUDED.status,
-    updated_at = NOW();
-```
-
-## 4) Verify
+## 3) Verify
 
 ```sql
 SELECT * FROM api_tokens ORDER BY id DESC;
 SELECT * FROM tenant_keys ORDER BY id DESC;
-SELECT * FROM risk_rules ORDER BY id DESC;
 ```
