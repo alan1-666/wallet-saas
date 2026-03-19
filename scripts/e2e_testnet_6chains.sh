@@ -34,11 +34,13 @@ create_addr_treasury() {
   REQ POST /v1/address/create "{\"tenant_id\":\"$TENANT_ID\",\"account_id\":\"$TREASURY_ACCOUNT_ID\",\"chain\":\"$chain\",\"coin\":\"$coin\",\"network\":\"$network\",\"sign_type\":\"$sign_type\",\"model\":\"account\"}"
 }
 
-extract_key_id() {
-  python3 - <<'PY'
+extract_field() {
+  local field="$1"
+  python3 - "$field" <<'PY'
 import json,sys
+field=sys.argv[1]
 obj=json.load(sys.stdin)
-print(obj.get("key_id",""))
+print(obj.get(field,""))
 PY
 }
 
@@ -62,22 +64,26 @@ CHAINS=(
 for item in "${CHAINS[@]}"; do
   read -r chain network coin sign <<<"$item"
   log "create address $chain/$network for user"
-  create_addr "$chain" "$network" "$coin" "$sign" >/dev/null
+  user_json="$(create_addr "$chain" "$network" "$coin" "$sign")"
   log "create address $chain/$network for treasury"
-  create_addr_treasury "$chain" "$network" "$coin" "$sign" >/dev/null
+  treasury_json="$(create_addr_treasury "$chain" "$network" "$coin" "$sign")"
+
+  user_key_id="$(printf '%s' "$user_json" | extract_field key_id)"
+  user_address="$(printf '%s' "$user_json" | extract_field address)"
+  treasury_address="$(printf '%s' "$treasury_json" | extract_field address)"
+  if [[ -z "$user_key_id" || -z "$user_address" || -z "$treasury_address" ]]; then
+    echo "[e2e] missing key_id/address for $chain/$network" >&2
+    exit 1
+  fi
 
   log "deposit notify mock $chain/$network"
-  REQ POST /v1/deposit/notify "{\"tenant_id\":\"$TENANT_ID\",\"account_id\":\"$USER_ACCOUNT_ID\",\"order_id\":\"dep_${chain}_${network}_001\",\"chain\":\"$chain\",\"network\":\"$network\",\"coin\":\"$coin\",\"amount\":\"1000000\",\"tx_hash\":\"0xdep_${chain}_${network}\",\"from_address\":\"from\",\"to_address\":\"to\",\"confirmations\":1,\"required_confirmations\":1,\"status\":\"CONFIRMED\"}" >/dev/null
+  REQ POST /v1/deposit/notify "{\"tenant_id\":\"$TENANT_ID\",\"account_id\":\"$USER_ACCOUNT_ID\",\"order_id\":\"dep_${chain}_${network}_001\",\"chain\":\"$chain\",\"network\":\"$network\",\"coin\":\"$coin\",\"amount\":\"1000000\",\"tx_hash\":\"0xdep_${chain}_${network}\",\"from_address\":\"faucet\",\"to_address\":\"$user_address\",\"confirmations\":1,\"required_confirmations\":1,\"status\":\"CONFIRMED\"}" >/dev/null
 
-  key_json="$(create_addr "$chain" "$network" "$coin" "$sign")"
-  key_id="$(printf '%s' "$key_json" | extract_key_id)"
-	  if [[ -n "$key_id" ]]; then
-	    log "withdraw mock $chain/$network"
-	    REQ POST /v1/withdraw "{\"tenant_id\":\"$TENANT_ID\",\"account_id\":\"$USER_ACCOUNT_ID\",\"order_id\":\"wd_${chain}_${network}_001\",\"chain\":\"$chain\",\"network\":\"$network\",\"coin\":\"$coin\",\"key_id\":\"$key_id\",\"sign_type\":\"$sign\",\"from\":\"from\",\"to\":\"to\",\"amount\":\"1\"}" >/dev/null
-	  fi
-	
-	  log "sweep mock $chain/$network"
-	  REQ POST /v1/sweep/run "{\"tenant_id\":\"$TENANT_ID\",\"from_account_id\":\"$USER_ACCOUNT_ID\",\"treasury_account_id\":\"$TREASURY_ACCOUNT_ID\",\"chain\":\"$chain\",\"network\":\"$network\",\"asset\":\"$coin\",\"amount\":\"1\",\"sweep_order_id\":\"sw_${chain}_${network}_001\"}" >/dev/null
+  log "withdraw mock $chain/$network"
+  REQ POST /v1/withdraw "{\"tenant_id\":\"$TENANT_ID\",\"account_id\":\"$USER_ACCOUNT_ID\",\"order_id\":\"wd_${chain}_${network}_001\",\"chain\":\"$chain\",\"network\":\"$network\",\"coin\":\"$coin\",\"key_id\":\"$user_key_id\",\"sign_type\":\"$sign\",\"from\":\"$user_address\",\"to\":\"$treasury_address\",\"amount\":\"1\"}" >/dev/null
+
+  log "sweep mock $chain/$network"
+  REQ POST /v1/sweep/run "{\"tenant_id\":\"$TENANT_ID\",\"from_account_id\":\"$USER_ACCOUNT_ID\",\"treasury_account_id\":\"$TREASURY_ACCOUNT_ID\",\"chain\":\"$chain\",\"network\":\"$network\",\"asset\":\"$coin\",\"amount\":\"1\",\"sweep_order_id\":\"sw_${chain}_${network}_001\"}" >/dev/null
 
 done
 

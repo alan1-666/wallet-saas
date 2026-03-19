@@ -53,6 +53,30 @@ func TestBuildBase64TxUsesStructuredSolanaPayloadForTokens(t *testing.T) {
 	}
 }
 
+func TestBuildBase64TxUsesStructuredTronPayload(t *testing.T) {
+	got, err := buildBase64Tx(ports.BuildUnsignedParams{
+		Chain:   "tron",
+		From:    "TFromAddress",
+		To:      "TToAddress",
+		Amount:  "1000",
+		Network: "nile",
+	})
+	if err != nil {
+		t.Fatalf("buildBase64Tx returned error: %v", err)
+	}
+	raw, err := base64.StdEncoding.DecodeString(got)
+	if err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	var payload tronAccountTxPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload.FromAddress != "TFromAddress" || payload.ToAddress != "TToAddress" || payload.Value != 1000 {
+		t.Fatalf("unexpected tron payload: %+v", payload)
+	}
+}
+
 func TestBuildBase64TxUsesStructuredEVMPayloadForSupportedChains(t *testing.T) {
 	t.Parallel()
 

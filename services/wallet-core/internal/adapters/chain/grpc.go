@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	pb "wallet-saas-v2/services/wallet-core/internal/pb/chaingateway"
@@ -78,6 +79,13 @@ type accountTxPayload struct {
 	TokenDecimals   uint32 `json:"token_decimals,omitempty"`
 }
 
+type tronAccountTxPayload struct {
+	ContractAddress string `json:"contract_address,omitempty"`
+	FromAddress     string `json:"from_address"`
+	ToAddress       string `json:"to_address"`
+	Value           int64  `json:"value"`
+}
+
 type evmDynamicFeePayload struct {
 	ChainID              string `json:"chainId"`
 	FromAddress          string `json:"fromAddress,omitempty"`
@@ -122,6 +130,24 @@ func buildBase64Tx(params ports.BuildUnsignedParams) (string, error) {
 		}
 		if payload.ContractAddress != "" {
 			payload.GasLimit = 100000
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return "", err
+		}
+		return base64.StdEncoding.EncodeToString(raw), nil
+	}
+
+	if chain == "tron" {
+		value, err := strconv.ParseInt(strings.TrimSpace(params.Amount), 10, 64)
+		if err != nil {
+			return "", fmt.Errorf("invalid tron amount: %w", err)
+		}
+		payload := tronAccountTxPayload{
+			ContractAddress: strings.TrimSpace(params.ContractAddress),
+			FromAddress:     strings.TrimSpace(params.From),
+			ToAddress:       strings.TrimSpace(params.To),
+			Value:           value,
 		}
 		raw, err := json.Marshal(payload)
 		if err != nil {

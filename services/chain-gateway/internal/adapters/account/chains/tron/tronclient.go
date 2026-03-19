@@ -1,17 +1,21 @@
 package tron
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"strings"
 	"time"
 
+	"github.com/fbsobreira/gotron-sdk/pkg/address"
 	"github.com/go-resty/resty/v2"
 )
 
 const (
 	defaultRequestTimeout = 10 * time.Second
 	defaultRetryCount     = 3
+	tronTRC20FeeLimit     = int64(100_000_000)
 )
 
 // TronClient Define a Tron RPC client
@@ -308,4 +312,76 @@ func (client *TronClient) JsonRpcGetTransactionByHash(params interface{}, result
 	}
 
 	return nil
+}
+
+func (client *TronClient) CreateTRXTransaction(fromAddress, toAddress string, amount int64) (*Transaction, error) {
+	params := map[string]any{
+		"owner_address": strings.TrimSpace(fromAddress),
+		"to_address":    strings.TrimSpace(toAddress),
+		"amount":        amount,
+		"visible":       true,
+	}
+	var response Transaction
+	if err := client.Wallet("createtransaction", params, &response); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(response.TxID) == "" {
+		return nil, fmt.Errorf("empty tron unsigned transaction")
+	}
+	return &response, nil
+}
+
+func (client *TronClient) CreateTRC20Transaction(fromAddress, toAddress, contractAddress string, amount int64) (*Transaction, error) {
+	to, err := address.Base58ToAddress(strings.TrimSpace(toAddress))
+	if err != nil {
+		return nil, fmt.Errorf("invalid tron to address: %w", err)
+	}
+	toBytes := to.Bytes()
+	if len(toBytes) == 21 {
+		toBytes = toBytes[1:]
+	}
+	if len(toBytes) != 20 {
+		return nil, fmt.Errorf("invalid tron to address bytes length: %d", len(toBytes))
+	}
+	amountHex := new(big.Int).SetInt64(amount).Text(16)
+	params := map[string]any{
+		"owner_address":     strings.TrimSpace(fromAddress),
+		"contract_address":  strings.TrimSpace(contractAddress),
+		"function_selector": "transfer(address,uint256)",
+		"parameter":         leftPadHex(hex.EncodeToString(toBytes), 64) + leftPadHex(amountHex, 64),
+		"fee_limit":         tronTRC20FeeLimit,
+		"call_value":        0,
+		"visible":           true,
+	}
+	var response TriggerTransactionResponse
+	if err := client.Wallet("triggersmartcontract", params, &response); err != nil {
+		return nil, err
+	}
+	if !response.Result.Result {
+		msg := strings.TrimSpace(response.Result.Message)
+		if msg == "" {
+			msg = "tron trigger smart contract failed"
+		}
+		return nil, fmt.Errorf("%s", msg)
+	}
+	if strings.TrimSpace(response.Transaction.TxID) == "" {
+		return nil, fmt.Errorf("empty tron smart contract transaction")
+	}
+	return &response.Transaction, nil
+}
+
+func (client *TronClient) BroadcastTransaction(tx *Transaction) (*BroadcastReturns, error) {
+	var response BroadcastReturns
+	if err := client.Wallet("broadcasttransaction", tx, &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
+func leftPadHex(value string, width int) string {
+	value = strings.TrimSpace(strings.TrimPrefix(value, "0x"))
+	if len(value) >= width {
+		return value
+	}
+	return strings.Repeat("0", width-len(value)) + value
 }

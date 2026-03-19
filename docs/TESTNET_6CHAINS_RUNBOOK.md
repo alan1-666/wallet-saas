@@ -78,12 +78,13 @@ curl -s -X POST http://127.0.0.1:8081/v1/deposit/notify -H 'Content-Type: applic
 
 ## 6. 提现（withdraw）
 
-> `key_id` 来自 `/v1/address/create` 返回。
+> `key_id` 和 `address` 都来自 `/v1/address/create` 返回。`from` 必须填用户地址，`to` 填外部地址或 treasury 地址。
+> 注意：`/v1/deposit/notify` 只会给账本记账，不会给链上地址真实充值。要让提现/归集真正广播成功，源地址仍然需要提前注入对应测试网 gas / 资产。
 
 ```bash
 curl -s -X POST http://127.0.0.1:8081/v1/withdraw -H 'Content-Type: application/json' -d '{
   "tenant_id":"t1","account_id":"u1001","order_id":"wd_eth_001","chain":"ethereum","network":"sepolia","coin":"ETH",
-  "key_id":"hd:ecdsa:ethereum:...","sign_type":"ecdsa","from":"0xfrom...","to":"0xto...","amount":"1000000000000000"
+  "key_id":"hd:ecdsa:ethereum:...","sign_type":"ecdsa","from":"0xUSER_ADDRESS...","to":"0xTREASURY_OR_EXTERNAL...","amount":"1000000000000000"
 }'
 ```
 

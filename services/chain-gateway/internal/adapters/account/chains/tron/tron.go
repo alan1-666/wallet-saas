@@ -1,15 +1,18 @@
 package tron
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcutil/base58"
+	account2 "github.com/dapplink-labs/chain-explorer-api/common/account"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/fbsobreira/gotron-sdk/pkg/address"
-	"wallet-saas-v2/services/chain-gateway/internal/adapters/account/chains"
 	"wallet-saas-v2/services/chain-gateway/internal/adapters/account/chains/config"
 	"wallet-saas-v2/services/chain-gateway/internal/adapters/account/chains/rpc/account"
 	"wallet-saas-v2/services/chain-gateway/internal/adapters/account/chains/rpc/common"
@@ -30,23 +33,108 @@ type ChainAdaptor struct {
 }
 
 func (c *ChainAdaptor) SendTx(req *account.SendTxRequest) (*account.SendTxResponse, error) {
+	tx, err := decodeTransactionBase64(req.RawTx)
+	if err != nil {
+		return &account.SendTxResponse{
+			Code: common2.ReturnCode_ERROR,
+			Msg:  err.Error(),
+		}, nil
+	}
+	resp, err := c.tronClient.BroadcastTransaction(&tx)
+	if err != nil {
+		return &account.SendTxResponse{
+			Code: common2.ReturnCode_ERROR,
+			Msg:  err.Error(),
+		}, nil
+	}
+	if !resp.Result {
+		msg := strings.TrimSpace(resp.Message)
+		if msg == "" {
+			msg = "tron broadcast failed"
+		}
+		return &account.SendTxResponse{
+			Code: common2.ReturnCode_ERROR,
+			Msg:  msg,
+		}, nil
+	}
+	txHash := strings.TrimSpace(resp.Txid)
+	if txHash == "" {
+		txHash = strings.TrimSpace(tx.TxID)
+	}
+	if txHash == "" {
+		return &account.SendTxResponse{
+			Code: common2.ReturnCode_ERROR,
+			Msg:  "empty tron tx hash",
+		}, nil
+	}
 	return &account.SendTxResponse{
-		Code: common2.ReturnCode_ERROR,
-		Msg:  "tron send tx not implemented",
+		Code:   common2.ReturnCode_SUCCESS,
+		Msg:    "broadcast tron tx success",
+		TxHash: txHash,
 	}, nil
 }
 
 func (c *ChainAdaptor) BuildUnSignTransaction(req *account.UnSignTransactionRequest) (*account.UnSignTransactionResponse, error) {
+	data, err := decodeUnsignedPayload(req.Base64Tx)
+	if err != nil {
+		return &account.UnSignTransactionResponse{
+			Code: common2.ReturnCode_ERROR,
+			Msg:  err.Error(),
+		}, nil
+	}
+	var tx *Transaction
+	if strings.TrimSpace(data.ContractAddress) == "" {
+		tx, err = c.tronClient.CreateTRXTransaction(data.FromAddress, data.ToAddress, data.Value)
+	} else {
+		tx, err = c.tronClient.CreateTRC20Transaction(data.FromAddress, data.ToAddress, data.ContractAddress, data.Value)
+	}
+	if err != nil {
+		return &account.UnSignTransactionResponse{
+			Code: common2.ReturnCode_ERROR,
+			Msg:  err.Error(),
+		}, nil
+	}
+	encoded, err := encodeTransactionBase64(tx)
+	if err != nil {
+		return &account.UnSignTransactionResponse{
+			Code: common2.ReturnCode_ERROR,
+			Msg:  err.Error(),
+		}, nil
+	}
 	return &account.UnSignTransactionResponse{
-		Code: common2.ReturnCode_ERROR,
-		Msg:  "tron build unsigned tx not implemented",
+		Code:     common2.ReturnCode_SUCCESS,
+		Msg:      "build tron unsigned tx success",
+		UnSignTx: encoded,
 	}, nil
 }
 
 func (c *ChainAdaptor) BuildSignedTransaction(req *account.SignedTransactionRequest) (*account.SignedTransactionResponse, error) {
+	tx, err := decodeTransactionBase64(req.Base64Tx)
+	if err != nil {
+		return &account.SignedTransactionResponse{
+			Code: common2.ReturnCode_ERROR,
+			Msg:  err.Error(),
+		}, nil
+	}
+	signature, err := normalizeTransactionSignature(req.Signature)
+	if err != nil {
+		return &account.SignedTransactionResponse{
+			Code: common2.ReturnCode_ERROR,
+			Msg:  err.Error(),
+		}, nil
+	}
+	tx.Signature = append(tx.Signature, signature)
+	encoded, err := encodeTransactionBase64(&tx)
+	if err != nil {
+		return &account.SignedTransactionResponse{
+			Code: common2.ReturnCode_ERROR,
+			Msg:  err.Error(),
+		}, nil
+	}
 	return &account.SignedTransactionResponse{
-		Code: common2.ReturnCode_ERROR,
-		Msg:  "tron build signed tx not implemented",
+		Code:     common2.ReturnCode_SUCCESS,
+		Msg:      "build tron signed tx success",
+		SignedTx: encoded,
 	}, nil
 }
 
@@ -64,7 +152,7 @@ func (c *ChainAdaptor) VerifySignedTransaction(req *account.VerifyTransactionReq
 	}, nil
 }
 
-func NewChainAdaptor(conf *config.Config) (chain.IChainAdaptor, error) {
+func NewChainAdaptor(conf *config.Config) (*ChainAdaptor, error) {
 	rpc := conf.WalletNode.Tron
 	tronClient := DialTronClient(rpc.RpcUrl, rpc.RpcUser, rpc.RpcPass)
 	tronDataClient, err := NewTronDataClient(conf.WalletNode.Tron.DataApiUrl, conf.WalletNode.Tron.DataApiKey, time.Second*15)
@@ -403,10 +491,36 @@ func (c *ChainAdaptor) GetFee(req *account.FeeRequest) (*account.FeeResponse, er
 }
 
 func (c *ChainAdaptor) GetTxByAddress(req *account.TxAddressRequest) (*account.TxAddressResponse, error) {
-
+	action := account2.OkLinkActionNormal
+	if req.ContractAddress != "0x00" && req.ContractAddress != "" {
+		action = account2.OkLinkActionToken
+	}
+	resp, err := c.tronDataClient.GetTxByAddress(uint64(req.Page), uint64(req.Pagesize), req.Address, action)
+	if err != nil {
+		log.Error("get tron tx by address error", "err", err)
+		return &account.TxAddressResponse{
+			Code: common2.ReturnCode_ERROR,
+			Msg:  "get tx list fail",
+		}, err
+	}
+	list := make([]*account.TxMessage, 0, len(resp.TransactionList))
+	for _, tx := range resp.TransactionList {
+		list = append(list, &account.TxMessage{
+			Hash:            tx.TxId,
+			To:              tx.To,
+			From:            tx.From,
+			Fee:             tx.TxId,
+			Status:          account.TxStatus_Success,
+			Value:           tx.Amount,
+			Type:            1,
+			Height:          tx.Height,
+			ContractAddress: tx.TokenContractAddress,
+		})
+	}
 	return &account.TxAddressResponse{
-		Code: common2.ReturnCode_ERROR,
-		Msg:  "not support",
+		Code: common2.ReturnCode_SUCCESS,
+		Msg:  "get tx list success",
+		Tx:   list,
 	}, nil
 }
 
@@ -535,6 +649,91 @@ func (c *ChainAdaptor) GetBlockByRange(req *account.BlockByRangeRequest) (*accou
 		Msg:  "not support get block by range ",
 		//BlockHeader: blockHeaderList,
 	}, nil
+}
+
+func decodeUnsignedPayload(base64Tx string) (TxStructure, error) {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(base64Tx))
+	if err != nil {
+		return TxStructure{}, fmt.Errorf("invalid base64_tx: %w", err)
+	}
+	var data TxStructure
+	if err := json.Unmarshal(raw, &data); err == nil {
+		if strings.TrimSpace(data.FromAddress) == "" || strings.TrimSpace(data.ToAddress) == "" {
+			return TxStructure{}, fmt.Errorf("tron payload requires from_address/to_address")
+		}
+		return data, nil
+	}
+	parts := strings.Split(strings.TrimSpace(string(raw)), ":")
+	if len(parts) != 4 || !strings.EqualFold(strings.TrimSpace(parts[0]), "tron") {
+		return TxStructure{}, fmt.Errorf("unsupported tron payload format")
+	}
+	value, err := strconv.ParseInt(strings.TrimSpace(parts[3]), 10, 64)
+	if err != nil {
+		return TxStructure{}, fmt.Errorf("invalid tron amount: %w", err)
+	}
+	return TxStructure{
+		FromAddress: strings.TrimSpace(parts[1]),
+		ToAddress:   strings.TrimSpace(parts[2]),
+		Value:       value,
+	}, nil
+}
+
+func decodeTransactionBase64(rawTx string) (Transaction, error) {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rawTx))
+	if err != nil {
+		return Transaction{}, fmt.Errorf("invalid tron transaction payload: %w", err)
+	}
+	var tx Transaction
+	if err := json.Unmarshal(raw, &tx); err != nil {
+		return Transaction{}, fmt.Errorf("decode tron transaction failed: %w", err)
+	}
+	if strings.TrimSpace(tx.TxID) == "" && strings.TrimSpace(tx.RawDataHex) == "" {
+		return Transaction{}, fmt.Errorf("empty tron transaction")
+	}
+	return tx, nil
+}
+
+func encodeTransactionBase64(tx *Transaction) (string, error) {
+	raw, err := json.Marshal(tx)
+	if err != nil {
+		return "", fmt.Errorf("encode tron transaction failed: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(raw), nil
+}
+
+func normalizeTransactionSignature(signature string) (string, error) {
+	sig := strings.TrimSpace(strings.TrimPrefix(signature, "0x"))
+	if sig == "" {
+		return "", fmt.Errorf("empty signature")
+	}
+	raw, err := hex.DecodeString(sig)
+	if err != nil {
+		return "", fmt.Errorf("invalid tron signature: %w", err)
+	}
+	if len(raw) != 65 {
+		return "", fmt.Errorf("invalid tron signature length: %d", len(raw))
+	}
+	return hex.EncodeToString(raw), nil
+}
+
+func signHashFromTransactionPayload(unsignedTx string) (string, error) {
+	tx, err := decodeTransactionBase64(unsignedTx)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(tx.TxID) != "" {
+		return strings.TrimSpace(tx.TxID), nil
+	}
+	rawDataHex := strings.TrimSpace(tx.RawDataHex)
+	if rawDataHex == "" {
+		return "", fmt.Errorf("tron transaction missing txID/raw_data_hex")
+	}
+	raw, err := hex.DecodeString(rawDataHex)
+	if err != nil {
+		return "", fmt.Errorf("invalid tron raw_data_hex: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 //

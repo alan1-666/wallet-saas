@@ -192,9 +192,19 @@ type TxStructure struct {
 }
 
 type BroadcastReturns struct {
+	Result  bool   `json:"result"`
 	Code    string `json:"code"`
 	Txid    string `json:"txid"`
 	Message string `json:"message"`
+}
+
+type TriggerTransactionResponse struct {
+	Result struct {
+		Result  bool   `json:"result"`
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"result"`
+	Transaction Transaction `json:"transaction"`
 }
 
 // 定义响应结构体
@@ -261,6 +271,7 @@ type BlockHeaderRaw struct {
 
 // Transaction 交易信息
 type Transaction struct {
+	Visible    bool             `json:"visible,omitempty"`
 	Ret        []TransactionRet `json:"ret"`
 	Signature  []string         `json:"signature"`
 	TxID       string           `json:"txID"`
