@@ -82,7 +82,7 @@ func (r *RPCReader) GetTxFinality(ctx context.Context, chain, network, txHash st
 	if err != nil {
 		return ports.TxFinality{}, err
 	}
-	latestSlot, err := r.getLatestSlot(ctx, ep)
+	latestSlot, err := r.getLatestSlot(ctx, ep, "finalized")
 	if err != nil {
 		r.ReportFailure(ep.Key, err)
 		return ports.TxFinality{}, err
@@ -107,7 +107,9 @@ func (r *RPCReader) GetTxFinality(ctx context.Context, chain, network, txHash st
 	statusText := "PENDING"
 	if status.Err != nil {
 		statusText = "REVERTED"
-	} else if confirmations > 0 || status.ConfirmationStatus == "confirmed" || status.ConfirmationStatus == "finalized" {
+	} else if status.ConfirmationStatus == "finalized" {
+		statusText = "FINALIZED"
+	} else if confirmations > 0 || status.ConfirmationStatus == "confirmed" {
 		statusText = "CONFIRMED"
 	}
 	r.ReportSuccess(ep.Key)
@@ -148,7 +150,7 @@ func (r *RPCReader) ListIncomingTransfers(ctx context.Context, chain, network, a
 		state.Head = sigs[0].Signature
 	}
 
-	latestSlot, err := r.getLatestSlot(ctx, ep)
+	latestSlot, err := r.getLatestSlot(ctx, ep, "confirmed")
 	if err != nil {
 		r.ReportFailure(ep.Key, err)
 		return ports.IncomingTransferResult{}, err
@@ -208,7 +210,9 @@ func buildIncomingTransferFromTx(tx solanaTx, watch string, sig solanaSignatureI
 	status := "PENDING"
 	if sig.Err != nil || tx.metaErr() {
 		status = "REVERTED"
-	} else if confirmations > 0 || sig.ConfirmationStatus == "confirmed" || sig.ConfirmationStatus == "finalized" {
+	} else if sig.ConfirmationStatus == "finalized" {
+		status = "FINALIZED"
+	} else if confirmations > 0 || sig.ConfirmationStatus == "confirmed" {
 		status = "CONFIRMED"
 	}
 	fromAddr := ""
@@ -266,9 +270,12 @@ func (r *RPCReader) ReportSuccess(endpointKey string) {
 	r.Endpoints.ReportSuccess(endpointKey)
 }
 
-func (r *RPCReader) getLatestSlot(ctx context.Context, ep endpoint.SelectedEndpoint) (uint64, error) {
+func (r *RPCReader) getLatestSlot(ctx context.Context, ep endpoint.SelectedEndpoint, commitment string) (uint64, error) {
 	result := uint64(0)
-	if err := r.call(ctx, ep, "getSlot", []any{map[string]any{"commitment": "processed"}}, &result); err != nil {
+	if strings.TrimSpace(commitment) == "" {
+		commitment = "confirmed"
+	}
+	if err := r.call(ctx, ep, "getSlot", []any{map[string]any{"commitment": commitment}}, &result); err != nil {
 		return 0, err
 	}
 	return result, nil

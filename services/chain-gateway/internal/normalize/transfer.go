@@ -422,8 +422,12 @@ func normalizeChain(chain string) string {
 func normalizeTxStatus(v string) string {
 	x := strings.ToLower(strings.TrimSpace(v))
 	switch x {
+	case "finalized":
+		return "FINALIZED"
 	case "success", "succeeded", "ok", "confirmed":
 		return "CONFIRMED"
+	case "reorged":
+		return "REORGED"
 	case "failed", "fail", "reverted", "dropped":
 		return "REVERTED"
 	case "pending":

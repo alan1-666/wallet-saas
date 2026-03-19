@@ -7,6 +7,14 @@ import (
 	"time"
 )
 
+const (
+	depositScanStatusSeen      = "SEEN"
+	depositScanStatusPending   = "PENDING"
+	depositScanStatusConfirmed = "CONFIRMED"
+	depositScanStatusFinalized = "FINALIZED"
+	depositScanStatusReorged   = "REORGED"
+)
+
 func depositOrderID(txHash string, eventIndex int64, accountID, network string) string {
 	return fmt.Sprintf("dep_%s_%d_%s_%s", txHash, eventIndex, accountID, normalizePart(network))
 }
@@ -21,6 +29,14 @@ func depositEventKey(tenantID, chain, network, txHash string, eventIndex int64) 
 
 func sweepEventKey(tenantID, chain, network, txHash string, eventIndex int64) string {
 	return fmt.Sprintf("sweep:%s:%s:%s:%s:%d", normalizePart(tenantID), normalizePart(chain), normalizePart(network), strings.ToLower(strings.TrimSpace(txHash)), eventIndex)
+}
+
+func projectDepositEventKey(tenantID, chain, network, txHash string, eventIndex int64) string {
+	return fmt.Sprintf("project-dep:%s:%s:%s:%s:%d", normalizePart(tenantID), normalizePart(chain), normalizePart(network), strings.ToLower(strings.TrimSpace(txHash)), eventIndex)
+}
+
+func sweepTriggerEventKey(tenantID, chain, network, txHash string, eventIndex int64) string {
+	return fmt.Sprintf("sweep-trigger:%s:%s:%s:%s:%d", normalizePart(tenantID), normalizePart(chain), normalizePart(network), strings.ToLower(strings.TrimSpace(txHash)), eventIndex)
 }
 
 func fallback(v, d string) string {
@@ -60,27 +76,106 @@ func max(a, b int64) int64 {
 	return b
 }
 
-func resolveDepositStatus(rawStatus string, confirmations, minConf int64) string {
+func resolveDepositScanStatus(rawStatus string, confirmations, minConf, reorgWindow int64) string {
 	status := strings.ToUpper(strings.TrimSpace(rawStatus))
-	if status == "REVERTED" || status == "FAILED" {
-		return "REVERTED"
-	}
-	if status == "PENDING" {
-		return "PENDING"
-	}
-	if confirmations < 0 {
-		if status == "CONFIRMED" {
-			return "CONFIRMED"
-		}
-		return "PENDING"
+	switch status {
+	case depositScanStatusReorged, "REVERTED", "FAILED":
+		return depositScanStatusReorged
+	case depositScanStatusFinalized:
+		return depositScanStatusFinalized
 	}
 	if minConf <= 0 {
 		minConf = 1
 	}
-	if confirmations >= 0 && confirmations < minConf {
+	if reorgWindow < 0 {
+		reorgWindow = 0
+	}
+	if confirmations < 0 {
+		return depositScanStatusSeen
+	}
+	if confirmations == 0 {
+		return depositScanStatusSeen
+	}
+	if confirmations < minConf {
+		return depositScanStatusPending
+	}
+	if reorgWindow > 0 && confirmations >= minConf+reorgWindow {
+		return depositScanStatusFinalized
+	}
+	return depositScanStatusConfirmed
+}
+
+func mapDepositLedgerStatus(scanStatus string) string {
+	switch strings.ToUpper(strings.TrimSpace(scanStatus)) {
+	case depositScanStatusConfirmed, depositScanStatusFinalized:
+		return "CONFIRMED"
+	case depositScanStatusReorged, "REVERTED", "FAILED":
+		return "REVERTED"
+	default:
 		return "PENDING"
 	}
-	return "CONFIRMED"
+}
+
+func shouldProjectNotify(oldScanStatus, newScanStatus string) bool {
+	return mapDepositLedgerStatus(oldScanStatus) != "CONFIRMED" && mapDepositLedgerStatus(newScanStatus) == "CONFIRMED"
+}
+
+func shouldTriggerSweep(autoSweep bool, accountID, treasuryID, oldScanStatus, newScanStatus string) bool {
+	if !autoSweep {
+		return false
+	}
+	if strings.TrimSpace(accountID) != "" && strings.TrimSpace(accountID) == strings.TrimSpace(treasuryID) {
+		return false
+	}
+	return shouldProjectNotify(oldScanStatus, newScanStatus)
+}
+
+type paginationGuard struct {
+	maxEmptyPages    int
+	cursorStallGuard int
+	emptyPages       int
+	seenCursors      map[string]int
+}
+
+func newPaginationGuard(maxEmptyPages, cursorStallGuard int) *paginationGuard {
+	if maxEmptyPages < 0 {
+		maxEmptyPages = 0
+	}
+	if cursorStallGuard < 0 {
+		cursorStallGuard = 0
+	}
+	return &paginationGuard{
+		maxEmptyPages:    maxEmptyPages,
+		cursorStallGuard: cursorStallGuard,
+		seenCursors:      make(map[string]int),
+	}
+}
+
+func (g *paginationGuard) Observe(currentCursor, nextCursor string, itemCount int) (advance bool, stop bool, reason string) {
+	if g == nil {
+		return nextCursor != "" && nextCursor != currentCursor, nextCursor == "" || nextCursor == currentCursor, ""
+	}
+	if itemCount == 0 {
+		g.emptyPages++
+	} else {
+		g.emptyPages = 0
+	}
+	if strings.TrimSpace(nextCursor) == "" {
+		return false, true, "cursor_exhausted"
+	}
+	if nextCursor == currentCursor {
+		return false, true, "cursor_not_advanced"
+	}
+	if g.maxEmptyPages > 0 && itemCount == 0 && g.emptyPages >= g.maxEmptyPages {
+		return false, true, "max_empty_pages"
+	}
+	if g.cursorStallGuard > 0 {
+		g.seenCursors[nextCursor]++
+		if g.seenCursors[nextCursor] > g.cursorStallGuard {
+			return false, true, "cursor_stall_guard"
+		}
+	}
+	return true, false, ""
 }
 
 func isSolanaChain(chain string) bool {

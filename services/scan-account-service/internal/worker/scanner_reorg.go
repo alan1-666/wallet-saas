@@ -49,10 +49,10 @@ func (s *Scanner) reconcileReorgCandidates(ctx context.Context) error {
 			if miss < s.ReorgNotFoundThreshold {
 				continue
 			}
-			nextStatus = "REVERTED"
+			nextStatus = depositScanStatusReorged
 			nextConf = 0
 		} else {
-			nextStatus = resolveDepositStatus(finality.Status, finality.Confirmations, minConf)
+			nextStatus = resolveDepositScanStatus(finality.Status, finality.Confirmations, minConf, s.ReorgWindow)
 			nextConf = finality.Confirmations
 			if c.NotFoundCount > 0 {
 				if err := s.Store.ResetSeenEventNotFound(ctx, c); err != nil {

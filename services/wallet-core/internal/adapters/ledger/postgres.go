@@ -997,9 +997,9 @@ func parseIntString(v string) (*big.Int, error) {
 
 func normalizeDepositStatus(v string) string {
 	switch strings.ToUpper(strings.TrimSpace(v)) {
-	case "REVERTED":
+	case "REVERTED", "REORGED":
 		return "REVERTED"
-	case "CONFIRMED":
+	case "CONFIRMED", "FINALIZED":
 		return "CONFIRMED"
 	default:
 		return "PENDING"

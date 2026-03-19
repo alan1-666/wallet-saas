@@ -391,10 +391,9 @@ LEFT JOIN scan_watch_addresses sw
  AND sw.coin = se.coin
  AND sw.network = se.network
  AND sw.address = se.address
-WHERE UPPER(COALESCE(se.status, '')) <> 'REVERTED'
+WHERE UPPER(COALESCE(se.status, '')) NOT IN ('REORGED', 'REVERTED')
   AND (
-    UPPER(COALESCE(se.status, '')) = 'PENDING'
-    OR se.not_found_count > 0
+    se.not_found_count > 0
     OR se.confirmations < (GREATEST(COALESCE(sw.min_confirmations, 1), 1) + $1)
   )
 ORDER BY se.updated_at DESC, se.created_at DESC
@@ -488,6 +487,40 @@ DO UPDATE SET
   next_retry_at = NOW(),
   last_error = '',
   updated_at = NOW()
+	`, ev.EventKey, ev.TenantID, ev.Chain, ev.Network, ev.EventType, ev.Payload, ev.MaxAttempts)
+	return err
+}
+
+func (p *Postgres) InsertOutboxEventIfAbsent(ctx context.Context, ev OutboxEvent) error {
+	if strings.TrimSpace(ev.EventKey) == "" || strings.TrimSpace(ev.EventType) == "" {
+		return fmt.Errorf("event_key/event_type are required")
+	}
+	if strings.TrimSpace(ev.TenantID) == "" || strings.TrimSpace(ev.Chain) == "" || strings.TrimSpace(ev.Network) == "" {
+		return fmt.Errorf("tenant_id/chain/network are required")
+	}
+	if strings.TrimSpace(ev.Payload) == "" {
+		return fmt.Errorf("payload is required")
+	}
+	if ev.MaxAttempts <= 0 {
+		ev.MaxAttempts = 12
+	}
+	_, err := p.db.ExecContext(ctx, `
+INSERT INTO scan_event_outbox (event_key, tenant_id, chain, network, event_type, payload, status, attempt_count, max_attempts, next_retry_at)
+VALUES ($1,$2,$3,$4,$5,CAST($6 AS JSONB),'PENDING',0,$7,NOW())
+ON CONFLICT (event_key)
+DO UPDATE SET
+  tenant_id = EXCLUDED.tenant_id,
+  chain = EXCLUDED.chain,
+  network = EXCLUDED.network,
+  event_type = EXCLUDED.event_type,
+  payload = EXCLUDED.payload,
+  status = 'PENDING',
+  attempt_count = 0,
+  max_attempts = EXCLUDED.max_attempts,
+  next_retry_at = NOW(),
+  last_error = '',
+  updated_at = NOW()
+WHERE scan_event_outbox.status = 'FAILED'
 `, ev.EventKey, ev.TenantID, ev.Chain, ev.Network, ev.EventType, ev.Payload, ev.MaxAttempts)
 	return err
 }
@@ -528,8 +561,9 @@ WHERE id=$1
 	return err
 }
 
-func (p *Postgres) MarkOutboxEventRetry(ctx context.Context, id int64, currentAttempt, maxAttempts int, reason string) error {
-	nextAttempt := currentAttempt + 1
+func (p *Postgres) MarkOutboxEventRetry(ctx context.Context, ev OutboxEvent, reason string) error {
+	nextAttempt := ev.Attempt + 1
+	maxAttempts := ev.MaxAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = 12
 	}
@@ -537,20 +571,44 @@ func (p *Postgres) MarkOutboxEventRetry(ctx context.Context, id int64, currentAt
 	if nextAttempt >= maxAttempts {
 		status = "FAILED"
 	}
-	backoff := time.Second * time.Duration(1<<min(nextAttempt, 6))
-	if backoff > 5*time.Minute {
-		backoff = 5 * time.Minute
-	}
+	backoff := outboxRetryBackoff(strings.TrimSpace(ev.EventType), nextAttempt)
 	_, err := p.db.ExecContext(ctx, `
 UPDATE scan_event_outbox
 SET status=$1,
     attempt_count=$2,
-    last_error=$3,
-    next_retry_at=NOW() + $4::interval,
-    updated_at=NOW()
+	    last_error=$3,
+	    next_retry_at=NOW() + $4::interval,
+	    updated_at=NOW()
 WHERE id=$5
-`, status, nextAttempt, strings.TrimSpace(reason), fmt.Sprintf("%d seconds", int(backoff.Seconds())), id)
+	`, status, nextAttempt, strings.TrimSpace(reason), fmt.Sprintf("%d seconds", int(backoff.Seconds())), ev.ID)
 	return err
+}
+
+func outboxRetryBackoff(eventType string, attempt int) time.Duration {
+	base := 2 * time.Second
+	maxBackoff := 5 * time.Minute
+	switch strings.ToUpper(strings.TrimSpace(eventType)) {
+	case "DEPOSIT_NOTIFY":
+		base = 2 * time.Second
+		maxBackoff = time.Minute
+	case "PROJECT_DEPOSIT_NOTIFY":
+		base = 5 * time.Second
+		maxBackoff = 5 * time.Minute
+	case "SWEEP_TRIGGER":
+		base = 15 * time.Second
+		maxBackoff = 10 * time.Minute
+	case "SWEEP_RUN":
+		base = 30 * time.Second
+		maxBackoff = 30 * time.Minute
+	}
+	if attempt < 1 {
+		attempt = 1
+	}
+	backoff := base * time.Duration(1<<min(attempt-1, 6))
+	if backoff > maxBackoff {
+		backoff = maxBackoff
+	}
+	return backoff
 }
 
 func (p *Postgres) ListPendingWithdraws(ctx context.Context, limit int) ([]PendingWithdraw, error) {

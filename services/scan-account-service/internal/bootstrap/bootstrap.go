@@ -47,7 +47,19 @@ func runWithMode(mode string) error {
 	if cfg.ProjectNotifyBaseURL != "" {
 		projectNotify = client.NewProjectNotify(cfg.ProjectNotifyBaseURL, cfg.ProjectNotifyToken, time.Duration(cfg.ProjectNotifyTimeoutMS)*time.Millisecond)
 	}
-	cg, err := client.NewChainGateway(cfg.ChainGatewayGRPCAddr, time.Duration(cfg.ChainGatewayTimeoutMS)*time.Millisecond)
+	cg, err := client.NewChainGateway(
+		cfg.ChainGatewayGRPCAddr,
+		time.Duration(cfg.ChainGatewayTimeoutMS)*time.Millisecond,
+		client.ChainGatewayOptions{
+			DefaultQPS:         cfg.ChainDefaultQPS,
+			DefaultConcurrency: cfg.ChainDefaultConcurrency,
+			QPSByChain:         cfg.ChainQPSMap,
+			ConcurrencyByChain: cfg.ChainConcurrencyMap,
+			RetryMaxAttempts:   cfg.ChainRetryMaxAttempts,
+			RetryBaseDelay:     time.Duration(cfg.ChainRetryBaseMS) * time.Millisecond,
+			RetryMaxDelay:      time.Duration(cfg.ChainRetryMaxMS) * time.Millisecond,
+		},
+	)
 	if err != nil {
 		return fmt.Errorf("init chain-gateway grpc client failed: %w", err)
 	}
@@ -81,6 +93,8 @@ func runWithMode(mode string) error {
 		Interval:                  time.Duration(cfg.IntervalSeconds) * time.Second,
 		AccountPageSize:           cfg.AccountPageSize,
 		AccountMaxPages:           cfg.AccountMaxPages,
+		AccountMaxEmptyPages:      cfg.AccountMaxEmptyPages,
+		AccountCursorStallGuard:   cfg.AccountCursorStallGuard,
 		WatchLimit:                cfg.WatchLimit,
 		AddrConcurrency:           cfg.AddrConcurrency,
 		ReorgWindow:               int64(cfg.ReorgWindow),
@@ -101,8 +115,8 @@ func runWithMode(mode string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	log.Printf("service=scan-account-service mode=%s wallet-core=%s chain-gateway-grpc=%s project-notify=%s interval=%ds addr-concurrency=%d sweep-min-balance=%s reorg-window=%d reorg-candidate-limit=%d reorg-not-found-threshold=%d outgoing-not-found-threshold=%d outgoing-not-found-grace=%ds",
-		mode, cfg.WalletCoreAddr, cfg.ChainGatewayGRPCAddr, cfg.ProjectNotifyBaseURL, cfg.IntervalSeconds, cfg.AddrConcurrency, cfg.SweepMinBalance, cfg.ReorgWindow, cfg.ReorgCandidateLimit, cfg.ReorgNotFoundThreshold, cfg.OutgoingNotFoundThreshold, cfg.OutgoingNotFoundGraceSeconds)
+	log.Printf("service=scan-account-service mode=%s wallet-core=%s chain-gateway-grpc=%s project-notify=%s interval=%ds addr-concurrency=%d page-size=%d max-pages=%d max-empty-pages=%d cursor-stall-guard=%d chain-default-qps=%.2f chain-default-concurrency=%d chain-retry-attempts=%d chain-retry-base-ms=%d chain-retry-max-ms=%d sweep-min-balance=%s reorg-window=%d reorg-candidate-limit=%d reorg-not-found-threshold=%d outgoing-not-found-threshold=%d outgoing-not-found-grace=%ds",
+		mode, cfg.WalletCoreAddr, cfg.ChainGatewayGRPCAddr, cfg.ProjectNotifyBaseURL, cfg.IntervalSeconds, cfg.AddrConcurrency, cfg.AccountPageSize, cfg.AccountMaxPages, cfg.AccountMaxEmptyPages, cfg.AccountCursorStallGuard, cfg.ChainDefaultQPS, cfg.ChainDefaultConcurrency, cfg.ChainRetryMaxAttempts, cfg.ChainRetryBaseMS, cfg.ChainRetryMaxMS, cfg.SweepMinBalance, cfg.ReorgWindow, cfg.ReorgCandidateLimit, cfg.ReorgNotFoundThreshold, cfg.OutgoingNotFoundThreshold, cfg.OutgoingNotFoundGraceSeconds)
 	err = scanner.Run(ctx)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		return err

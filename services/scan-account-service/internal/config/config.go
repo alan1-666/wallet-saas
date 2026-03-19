@@ -19,6 +19,8 @@ type Config struct {
 	IntervalSeconds              int
 	AccountPageSize              int
 	AccountMaxPages              int
+	AccountMaxEmptyPages         int
+	AccountCursorStallGuard      int
 	WatchLimit                   int
 	AddrConcurrency              int
 	ReorgWindow                  int
@@ -29,6 +31,13 @@ type Config struct {
 	SweepMinBalance              string
 	WalletCoreTimeoutMS          int
 	ChainGatewayTimeoutMS        int
+	ChainDefaultQPS              float64
+	ChainDefaultConcurrency      int
+	ChainQPSMap                  map[string]float64
+	ChainConcurrencyMap          map[string]int
+	ChainRetryMaxAttempts        int
+	ChainRetryBaseMS             int
+	ChainRetryMaxMS              int
 }
 
 func Load() Config {
@@ -45,6 +54,8 @@ func Load() Config {
 		IntervalSeconds:              atoi(getenv("SCAN_INTERVAL_SECONDS", "5"), 5),
 		AccountPageSize:              atoi(getenv("SCAN_ACCOUNT_PAGE_SIZE", "12"), 12),
 		AccountMaxPages:              atoi(getenv("SCAN_ACCOUNT_MAX_PAGES", "1"), 1),
+		AccountMaxEmptyPages:         atoi(getenv("SCAN_ACCOUNT_MAX_EMPTY_PAGES", "2"), 2),
+		AccountCursorStallGuard:      atoi(getenv("SCAN_ACCOUNT_CURSOR_STALL_GUARD", "1"), 1),
 		WatchLimit:                   atoi(getenv("SCAN_WATCH_LIMIT", "500"), 500),
 		AddrConcurrency:              atoi(getenv("SCAN_ADDR_CONCURRENCY", "2"), 2),
 		ReorgWindow:                  atoi(getenv("SCAN_REORG_WINDOW", "6"), 6),
@@ -55,6 +66,13 @@ func Load() Config {
 		SweepMinBalance:              getenv("SCAN_SWEEP_MIN_BALANCE", "50"),
 		WalletCoreTimeoutMS:          atoi(getenv("SCAN_WALLET_CORE_TIMEOUT_MS", "10000"), 10000),
 		ChainGatewayTimeoutMS:        atoi(getenv("SCAN_CHAIN_GATEWAY_TIMEOUT_MS", "10000"), 10000),
+		ChainDefaultQPS:              atof(getenv("SCAN_CHAIN_DEFAULT_QPS", "2"), 2),
+		ChainDefaultConcurrency:      atoi(getenv("SCAN_CHAIN_DEFAULT_CONCURRENCY", "2"), 2),
+		ChainQPSMap:                  parseFloatMap(os.Getenv("SCAN_CHAIN_QPS_MAP")),
+		ChainConcurrencyMap:          parseIntMap(os.Getenv("SCAN_CHAIN_CONCURRENCY_MAP")),
+		ChainRetryMaxAttempts:        atoi(getenv("SCAN_CHAIN_RETRY_MAX_ATTEMPTS", "3"), 3),
+		ChainRetryBaseMS:             atoi(getenv("SCAN_CHAIN_RETRY_BASE_MS", "250"), 250),
+		ChainRetryMaxMS:              atoi(getenv("SCAN_CHAIN_RETRY_MAX_MS", "4000"), 4000),
 	}
 	return cfg
 }
@@ -82,6 +100,14 @@ func atoi64(v string, fallback int64) int64 {
 	return n
 }
 
+func atof(v string, fallback float64) float64 {
+	n, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
 func parseChainIDMap(raw string) map[string]int64 {
 	out := make(map[string]int64)
 	for _, item := range strings.Split(raw, ",") {
@@ -98,6 +124,54 @@ func parseChainIDMap(raw string) map[string]int64 {
 			continue
 		}
 		val, err := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+		if err != nil || val <= 0 {
+			continue
+		}
+		out[key] = val
+	}
+	return out
+}
+
+func parseFloatMap(raw string) map[string]float64 {
+	out := make(map[string]float64)
+	for _, item := range strings.Split(raw, ",") {
+		pair := strings.TrimSpace(item)
+		if pair == "" {
+			continue
+		}
+		parts := strings.SplitN(pair, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(parts[0]))
+		if key == "" {
+			continue
+		}
+		val, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+		if err != nil || val <= 0 {
+			continue
+		}
+		out[key] = val
+	}
+	return out
+}
+
+func parseIntMap(raw string) map[string]int {
+	out := make(map[string]int)
+	for _, item := range strings.Split(raw, ",") {
+		pair := strings.TrimSpace(item)
+		if pair == "" {
+			continue
+		}
+		parts := strings.SplitN(pair, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(parts[0]))
+		if key == "" {
+			continue
+		}
+		val, err := strconv.Atoi(strings.TrimSpace(parts[1]))
 		if err != nil || val <= 0 {
 			continue
 		}

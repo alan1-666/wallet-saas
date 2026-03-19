@@ -110,6 +110,7 @@ State orchestration and domain logic.
 - status transitions supported: `PENDING -> CONFIRMED -> REVERTED`
 - `CONFIRMED` credits balance once; `REVERTED` debits it back once (idempotent)
 - state regression is blocked (`CONFIRMED` will not be downgraded back to `PENDING`)
+- compatibility aliases: inbound `FINALIZED` is treated as `CONFIRMED`, and `REORGED` is treated as `REVERTED`
 
 ### Current limitation
 - If `key_ids` length is less than input count, last key will be reused for remaining inputs.

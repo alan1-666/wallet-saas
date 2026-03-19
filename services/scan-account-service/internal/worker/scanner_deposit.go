@@ -66,7 +66,7 @@ func (s *Scanner) scanAccountModel(ctx context.Context, watches []store.WatchAdd
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if supportsChainWideAccountScan(group.Chain) {
+			if supportsChainWideAccountScan(group.Chain, group.Coin) {
 				if err := s.scanOneAccountGroup(ctx, group); err != nil {
 					log.Printf("account group scan failed chain=%s network=%s coin=%s watches=%d err=%v",
 						group.Chain, group.Network, group.Coin, len(group.Watches), err)
@@ -144,6 +144,7 @@ func (s *Scanner) scanOneAccountGroup(ctx context.Context, group *watchGroup) er
 	if maxPages <= 0 {
 		maxPages = 1
 	}
+	guard := newPaginationGuard(s.AccountMaxEmptyPages, s.AccountCursorStallGuard)
 	for i := 0; i < maxPages; i++ {
 		txs, nextCursor, err := s.ChainGateway.ListIncomingTransfers(
 			ctx,
@@ -157,9 +158,6 @@ func (s *Scanner) scanOneAccountGroup(ctx context.Context, group *watchGroup) er
 		)
 		if err != nil {
 			return err
-		}
-		if nextCursor != "" {
-			nextCheckpoint = nextCursor
 		}
 		if len(txs) > 0 {
 			lastTx = strings.TrimSpace(txs[len(txs)-1].TxHash)
@@ -188,7 +186,7 @@ func (s *Scanner) scanOneAccountGroup(ctx context.Context, group *watchGroup) er
 				if minConf <= 0 {
 					minConf = 1
 				}
-				status := resolveDepositStatus(tx.Status, tx.Confirmations, minConf)
+				status := resolveDepositScanStatus(tx.Status, tx.Confirmations, minConf, s.ReorgWindow)
 				change, err := s.Store.UpsertSeenEvent(ctx, w, tx.TxHash, eventIdx, status, tx.Confirmations, tx.Amount, tx.FromAddress, fallback(tx.ToAddress, w.Address))
 				if err != nil {
 					return err
@@ -196,8 +194,8 @@ func (s *Scanner) scanOneAccountGroup(ctx context.Context, group *watchGroup) er
 				if !change.Notify {
 					continue
 				}
-				log.Printf("deposit state transition tenant=%s account=%s order=%s tx=%s old_status=%s new_status=%s old_conf=%d new_conf=%d source=scan",
-					w.TenantID, w.AccountID, depositOrderID(tx.TxHash, eventIdx, w.AccountID, w.Network), tx.TxHash, change.OldStatus, change.NewStatus, change.OldConfirms, change.NewConfirms)
+				log.Printf("deposit state transition tenant=%s account=%s order=%s tx=%s old_scan_status=%s new_scan_status=%s old_ledger_status=%s new_ledger_status=%s old_conf=%d new_conf=%d source=scan",
+					w.TenantID, w.AccountID, depositOrderID(tx.TxHash, eventIdx, w.AccountID, w.Network), tx.TxHash, change.OldStatus, change.NewStatus, mapDepositLedgerStatus(change.OldStatus), mapDepositLedgerStatus(change.NewStatus), change.OldConfirms, change.NewConfirms)
 				if err := s.enqueueDepositEvent(
 					ctx,
 					w,
@@ -215,7 +213,18 @@ func (s *Scanner) scanOneAccountGroup(ctx context.Context, group *watchGroup) er
 			}
 		}
 
-		if nextCursor == "" || nextCursor == currentCursor {
+		advanceCursor, stop, reason := guard.Observe(currentCursor, nextCursor, len(txs))
+		if advanceCursor || reason == "max_empty_pages" {
+			nextCheckpoint = nextCursor
+		}
+		if stop {
+			if reason != "" {
+				log.Printf("account group scan pagination stop chain=%s network=%s coin=%s reason=%s current_cursor=%s next_cursor=%s page=%d txs=%d",
+					group.Chain, group.Network, group.Coin, reason, currentCursor, nextCursor, i+1, len(txs))
+			}
+			break
+		}
+		if !advanceCursor {
 			break
 		}
 		currentCursor = nextCursor
@@ -249,6 +258,7 @@ func (s *Scanner) scanOneWatch(ctx context.Context, w store.WatchAddress, manage
 	if strings.EqualFold(strings.TrimSpace(w.Model), "utxo") {
 		maxPages = 1
 	}
+	guard := newPaginationGuard(s.AccountMaxEmptyPages, s.AccountCursorStallGuard)
 	for i := 0; i < maxPages; i++ {
 		txs, nextCursor, err := s.ChainGateway.ListIncomingTransfers(ctx, w.Model, w.Chain, w.Coin, w.Network, w.Address, cursor, s.AccountPageSize)
 		if err != nil {
@@ -268,7 +278,7 @@ func (s *Scanner) scanOneWatch(ctx context.Context, w store.WatchAddress, manage
 			if eventIdx <= 0 {
 				eventIdx = int64(idx)
 			}
-			status := resolveDepositStatus(tx.Status, tx.Confirmations, minConf)
+			status := resolveDepositScanStatus(tx.Status, tx.Confirmations, minConf, s.ReorgWindow)
 			change, err := s.Store.UpsertSeenEvent(ctx, w, tx.TxHash, eventIdx, status, tx.Confirmations, tx.Amount, tx.FromAddress, fallback(tx.ToAddress, w.Address))
 			if err != nil {
 				return err
@@ -276,14 +286,28 @@ func (s *Scanner) scanOneWatch(ctx context.Context, w store.WatchAddress, manage
 			if !change.Notify {
 				continue
 			}
-			log.Printf("deposit state transition tenant=%s account=%s order=%s tx=%s old_status=%s new_status=%s old_conf=%d new_conf=%d source=scan",
-				w.TenantID, w.AccountID, depositOrderID(tx.TxHash, eventIdx, w.AccountID, w.Network), tx.TxHash, change.OldStatus, change.NewStatus, change.OldConfirms, change.NewConfirms)
+			log.Printf("deposit state transition tenant=%s account=%s order=%s tx=%s old_scan_status=%s new_scan_status=%s old_ledger_status=%s new_ledger_status=%s old_conf=%d new_conf=%d source=scan",
+				w.TenantID, w.AccountID, depositOrderID(tx.TxHash, eventIdx, w.AccountID, w.Network), tx.TxHash, change.OldStatus, change.NewStatus, mapDepositLedgerStatus(change.OldStatus), mapDepositLedgerStatus(change.NewStatus), change.OldConfirms, change.NewConfirms)
 			if err := s.enqueueDepositEvent(ctx, w, tx.TxHash, eventIdx, tx.Amount, tx.FromAddress, fallback(tx.ToAddress, w.Address), tx.Confirmations, minConf, status); err != nil {
 				return err
 			}
 			lastTx = tx.TxHash
 		}
-		if nextCursor == "" || nextCursor == cursor || maxPages == 1 {
+		if maxPages == 1 {
+			break
+		}
+		advanceCursor, stop, reason := guard.Observe(cursor, nextCursor, len(txs))
+		if reason == "max_empty_pages" {
+			cursor = nextCursor
+		}
+		if stop {
+			if reason != "" {
+				log.Printf("watch scan pagination stop tenant=%s account=%s chain=%s coin=%s network=%s address=%s reason=%s current_cursor=%s next_cursor=%s page=%d txs=%d",
+					w.TenantID, w.AccountID, w.Chain, w.Coin, w.Network, w.Address, reason, cursor, nextCursor, i+1, len(txs))
+			}
+			break
+		}
+		if !advanceCursor {
 			break
 		}
 		cursor = nextCursor
@@ -294,7 +318,7 @@ func (s *Scanner) scanOneWatch(ctx context.Context, w store.WatchAddress, manage
 	return s.Store.UpsertCheckpoint(ctx, w, cursor, lastTx)
 }
 
-func (s *Scanner) enqueueDepositEvent(ctx context.Context, w store.WatchAddress, txHash string, eventIndex int64, amount, fromAddr, toAddr string, confirmations, requiredConfirmations int64, status string) error {
+func (s *Scanner) enqueueDepositEvent(ctx context.Context, w store.WatchAddress, txHash string, eventIndex int64, amount, fromAddr, toAddr string, confirmations, requiredConfirmations int64, scanStatus string) error {
 	orderID := depositOrderID(txHash, eventIndex, w.AccountID, w.Network)
 	payload := DepositOutboxPayload{
 		TenantID:       w.TenantID,
@@ -310,9 +334,13 @@ func (s *Scanner) enqueueDepositEvent(ctx context.Context, w store.WatchAddress,
 		ToAddress:      toAddr,
 		WatchAddress:   w.Address,
 		TreasuryID:     fallback(w.TreasuryAccountID, "treasury-main"),
+		AutoSweep:      w.AutoSweep,
 		SweepThreshold: strings.TrimSpace(w.SweepThreshold),
 		Confirmations:  confirmations,
-		Status:         status,
+		ScanStatus:     scanStatus,
+		Status:         mapDepositLedgerStatus(scanStatus),
+		ProjectNotify:  strings.TrimSpace(w.AccountID) != strings.TrimSpace(fallback(w.TreasuryAccountID, "treasury-main")),
+		SweepTrigger:   w.AutoSweep && strings.TrimSpace(w.AccountID) != strings.TrimSpace(fallback(w.TreasuryAccountID, "treasury-main")),
 		RequiredConfs:  requiredConfirmations,
 	}
 	raw, err := json.Marshal(payload)
@@ -331,14 +359,32 @@ func (s *Scanner) enqueueDepositEvent(ctx context.Context, w store.WatchAddress,
 	}); err != nil {
 		return err
 	}
-	log.Printf("deposit event enqueued tenant=%s account=%s order=%s tx=%s status=%s conf=%d amount=%s key=%s",
-		w.TenantID, w.AccountID, orderID, txHash, status, confirmations, amount, eventKey)
+	log.Printf("deposit event enqueued tenant=%s account=%s order=%s tx=%s scan_status=%s ledger_status=%s conf=%d amount=%s key=%s",
+		w.TenantID, w.AccountID, orderID, txHash, scanStatus, payload.Status, confirmations, amount, eventKey)
 	return nil
 }
 
-func supportsChainWideAccountScan(chain string) bool {
-	// EVM account reader currently performs expensive full-block scans when address is empty.
-	// Keep chain-wide scan disabled to use per-address path and avoid long request timeouts.
-	_ = chain
-	return false
+func supportsChainWideAccountScan(chain, coin string) bool {
+	switch strings.ToLower(strings.TrimSpace(chain)) {
+	case "ethereum", "binance", "polygon", "arbitrum", "optimism", "linea", "scroll", "mantle", "zksync", "base", "avalanche":
+		return isNativeEVMAsset(chain, coin)
+	default:
+		return false
+	}
+}
+
+func isNativeEVMAsset(chain, coin string) bool {
+	c := strings.ToUpper(strings.TrimSpace(coin))
+	switch strings.ToLower(strings.TrimSpace(chain)) {
+	case "binance":
+		return c == "BNB"
+	case "polygon":
+		return c == "MATIC" || c == "POL"
+	case "avalanche":
+		return c == "AVAX"
+	case "mantle":
+		return c == "MNT"
+	default:
+		return c == "ETH"
+	}
 }

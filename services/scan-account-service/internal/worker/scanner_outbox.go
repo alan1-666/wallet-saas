@@ -12,8 +12,10 @@ import (
 )
 
 const (
-	OutboxEventDepositNotify = "DEPOSIT_NOTIFY"
-	OutboxEventSweepRun      = "SWEEP_RUN"
+	OutboxEventDepositNotify        = "DEPOSIT_NOTIFY"
+	OutboxEventProjectDepositNotify = "PROJECT_DEPOSIT_NOTIFY"
+	OutboxEventSweepTrigger         = "SWEEP_TRIGGER"
+	OutboxEventSweepRun             = "SWEEP_RUN"
 )
 
 type DepositOutboxPayload struct {
@@ -30,10 +32,14 @@ type DepositOutboxPayload struct {
 	ToAddress      string `json:"to_address"`
 	WatchAddress   string `json:"watch_address"`
 	TreasuryID     string `json:"treasury_account_id"`
+	AutoSweep      bool   `json:"auto_sweep"`
 	SweepThreshold string `json:"sweep_threshold"`
 	Confirmations  int64  `json:"confirmations"`
 	RequiredConfs  int64  `json:"required_confirmations"`
+	ScanStatus     string `json:"scan_status"`
 	Status         string `json:"status"`
+	ProjectNotify  bool   `json:"project_notify"`
+	SweepTrigger   bool   `json:"sweep_trigger"`
 }
 
 type SweepOutboxPayload struct {
@@ -60,13 +66,17 @@ func (s *Scanner) dispatchOutbox(ctx context.Context) error {
 		switch strings.ToUpper(strings.TrimSpace(ev.EventType)) {
 		case OutboxEventDepositNotify:
 			handleErr = s.handleDepositOutboxEvent(ctx, ev)
+		case OutboxEventProjectDepositNotify:
+			handleErr = s.handleProjectDepositOutboxEvent(ctx, ev)
+		case OutboxEventSweepTrigger:
+			handleErr = s.handleSweepTriggerOutboxEvent(ctx, ev)
 		case OutboxEventSweepRun:
 			handleErr = s.handleSweepOutboxEvent(ctx, ev)
 		default:
 			handleErr = fmt.Errorf("unsupported outbox event type=%s", ev.EventType)
 		}
 		if handleErr != nil {
-			_ = s.Store.MarkOutboxEventRetry(ctx, ev.ID, ev.Attempt, ev.MaxAttempts, handleErr.Error())
+			_ = s.Store.MarkOutboxEventRetry(ctx, ev, handleErr.Error())
 			log.Printf("outbox dispatch failed id=%d key=%s type=%s attempt=%d/%d err=%v", ev.ID, ev.EventKey, ev.EventType, ev.Attempt+1, ev.MaxAttempts, handleErr)
 			continue
 		}
@@ -108,13 +118,39 @@ func (s *Scanner) handleDepositOutboxEvent(ctx context.Context, ev store.OutboxE
 	if strings.ToUpper(strings.TrimSpace(payload.Status)) != "CONFIRMED" {
 		return nil
 	}
-	if strings.TrimSpace(payload.AccountID) == strings.TrimSpace(payload.TreasuryID) {
+	if payload.ProjectNotify {
+		if err := s.enqueueProjectDepositOutboxEvent(ctx, payload); err != nil {
+			return err
+		}
+	}
+	if payload.SweepTrigger {
+		if err := s.enqueueSweepTriggerOutboxEvent(ctx, payload); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Scanner) handleProjectDepositOutboxEvent(ctx context.Context, ev store.OutboxEvent) error {
+	var payload DepositOutboxPayload
+	if err := json.Unmarshal([]byte(ev.Payload), &payload); err != nil {
+		return fmt.Errorf("decode project deposit outbox payload: %w", err)
+	}
+	if !payload.ProjectNotify {
 		return nil
 	}
-	if err := s.notifyProjectDeposit(ctx, reqID, payload); err != nil {
-		return err
-	}
+	reqID := fmt.Sprintf("scan-outbox-project-deposit-%d-%d", ev.ID, ev.Attempt+1)
+	return s.notifyProjectDeposit(ctx, reqID, payload)
+}
 
+func (s *Scanner) handleSweepTriggerOutboxEvent(ctx context.Context, ev store.OutboxEvent) error {
+	var payload DepositOutboxPayload
+	if err := json.Unmarshal([]byte(ev.Payload), &payload); err != nil {
+		return fmt.Errorf("decode sweep trigger outbox payload: %w", err)
+	}
+	if !payload.SweepTrigger || !payload.AutoSweep {
+		return nil
+	}
 	threshold := strings.TrimSpace(payload.SweepThreshold)
 	if threshold == "" || threshold == "0" {
 		threshold = strings.TrimSpace(s.SweepMinBalance)
@@ -135,7 +171,6 @@ func (s *Scanner) handleDepositOutboxEvent(ctx context.Context, ev store.OutboxE
 			payload.TenantID, payload.AccountID, payload.TxHash, currentBalance, threshold)
 		return nil
 	}
-
 	sweepPayload := SweepOutboxPayload{
 		TenantID:          payload.TenantID,
 		SweepOrderID:      sweepOrderID(payload.TxHash, payload.EventIndex, payload.AccountID, payload.Network),
@@ -151,7 +186,7 @@ func (s *Scanner) handleDepositOutboxEvent(ctx context.Context, ev store.OutboxE
 		return err
 	}
 	sweepKey := sweepEventKey(payload.TenantID, payload.Chain, payload.Network, payload.TxHash, payload.EventIndex)
-	return s.Store.UpsertOutboxEvent(ctx, store.OutboxEvent{
+	return s.Store.InsertOutboxEventIfAbsent(ctx, store.OutboxEvent{
 		EventKey:    sweepKey,
 		TenantID:    payload.TenantID,
 		Chain:       strings.ToLower(strings.TrimSpace(payload.Chain)),
@@ -180,5 +215,37 @@ func (s *Scanner) handleSweepOutboxEvent(ctx context.Context, ev store.OutboxEve
 		Network:           payload.Network,
 		Asset:             payload.Asset,
 		Amount:            payload.Amount,
+	})
+}
+
+func (s *Scanner) enqueueProjectDepositOutboxEvent(ctx context.Context, payload DepositOutboxPayload) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return s.Store.InsertOutboxEventIfAbsent(ctx, store.OutboxEvent{
+		EventKey:    projectDepositEventKey(payload.TenantID, payload.Chain, payload.Network, payload.TxHash, payload.EventIndex),
+		TenantID:    payload.TenantID,
+		Chain:       strings.ToLower(strings.TrimSpace(payload.Chain)),
+		Network:     strings.ToLower(strings.TrimSpace(payload.Network)),
+		EventType:   OutboxEventProjectDepositNotify,
+		Payload:     string(raw),
+		MaxAttempts: 24,
+	})
+}
+
+func (s *Scanner) enqueueSweepTriggerOutboxEvent(ctx context.Context, payload DepositOutboxPayload) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return s.Store.InsertOutboxEventIfAbsent(ctx, store.OutboxEvent{
+		EventKey:    sweepTriggerEventKey(payload.TenantID, payload.Chain, payload.Network, payload.TxHash, payload.EventIndex),
+		TenantID:    payload.TenantID,
+		Chain:       strings.ToLower(strings.TrimSpace(payload.Chain)),
+		Network:     strings.ToLower(strings.TrimSpace(payload.Network)),
+		EventType:   OutboxEventSweepTrigger,
+		Payload:     string(raw),
+		MaxAttempts: 24,
 	})
 }

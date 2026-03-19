@@ -17,6 +17,8 @@ type Scanner struct {
 	Interval                  time.Duration
 	AccountPageSize           int
 	AccountMaxPages           int
+	AccountMaxEmptyPages      int
+	AccountCursorStallGuard   int
 	WatchLimit                int
 	AddrConcurrency           int
 	ReorgWindow               int64
@@ -43,6 +45,12 @@ func (s *Scanner) Run(ctx context.Context) error {
 	}
 	if s.AccountMaxPages <= 0 {
 		s.AccountMaxPages = 2
+	}
+	if s.AccountMaxEmptyPages <= 0 {
+		s.AccountMaxEmptyPages = 2
+	}
+	if s.AccountCursorStallGuard <= 0 {
+		s.AccountCursorStallGuard = 1
 	}
 	if s.WatchLimit <= 0 {
 		s.WatchLimit = 500
