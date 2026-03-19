@@ -71,13 +71,13 @@ for item in "${CHAINS[@]}"; do
 
   key_json="$(create_addr "$chain" "$network" "$coin" "$sign")"
   key_id="$(printf '%s' "$key_json" | extract_key_id)"
-  if [[ -n "$key_id" ]]; then
-    log "withdraw mock $chain/$network"
-    REQ POST /v1/withdraw "{\"tenant_id\":\"$TENANT_ID\",\"account_id\":\"$USER_ACCOUNT_ID\",\"order_id\":\"wd_${chain}_${network}_001\",\"chain\":\"$chain\",\"network\":\"$network\",\"coin\":\"$coin\",\"key_id\":\"$key_id\",\"sign_type\":\"$sign\",\"from\":\"from\",\"to\":\"to\",\"amount\":\"1\"}" >/dev/null || true
-  fi
-
-  log "sweep mock $chain/$network"
-  REQ POST /v1/sweep/run "{\"tenant_id\":\"$TENANT_ID\",\"from_account_id\":\"$USER_ACCOUNT_ID\",\"treasury_account_id\":\"$TREASURY_ACCOUNT_ID\",\"chain\":\"$chain\",\"network\":\"$network\",\"asset\":\"$coin\",\"amount\":\"1\",\"sweep_order_id\":\"sw_${chain}_${network}_001\"}" >/dev/null || true
+	  if [[ -n "$key_id" ]]; then
+	    log "withdraw mock $chain/$network"
+	    REQ POST /v1/withdraw "{\"tenant_id\":\"$TENANT_ID\",\"account_id\":\"$USER_ACCOUNT_ID\",\"order_id\":\"wd_${chain}_${network}_001\",\"chain\":\"$chain\",\"network\":\"$network\",\"coin\":\"$coin\",\"key_id\":\"$key_id\",\"sign_type\":\"$sign\",\"from\":\"from\",\"to\":\"to\",\"amount\":\"1\"}" >/dev/null
+	  fi
+	
+	  log "sweep mock $chain/$network"
+	  REQ POST /v1/sweep/run "{\"tenant_id\":\"$TENANT_ID\",\"from_account_id\":\"$USER_ACCOUNT_ID\",\"treasury_account_id\":\"$TREASURY_ACCOUNT_ID\",\"chain\":\"$chain\",\"network\":\"$network\",\"asset\":\"$coin\",\"amount\":\"1\",\"sweep_order_id\":\"sw_${chain}_${network}_001\"}" >/dev/null
 
 done
 

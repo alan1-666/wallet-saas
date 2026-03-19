@@ -30,28 +30,38 @@ type ChainAdaptor struct {
 }
 
 func (c *ChainAdaptor) SendTx(req *account.SendTxRequest) (*account.SendTxResponse, error) {
-	//TODO implement me
-	panic("implement me")
+	return &account.SendTxResponse{
+		Code: common2.ReturnCode_ERROR,
+		Msg:  "tron send tx not implemented",
+	}, nil
 }
 
 func (c *ChainAdaptor) BuildUnSignTransaction(req *account.UnSignTransactionRequest) (*account.UnSignTransactionResponse, error) {
-	//TODO implement me
-	panic("implement me")
+	return &account.UnSignTransactionResponse{
+		Code: common2.ReturnCode_ERROR,
+		Msg:  "tron build unsigned tx not implemented",
+	}, nil
 }
 
 func (c *ChainAdaptor) BuildSignedTransaction(req *account.SignedTransactionRequest) (*account.SignedTransactionResponse, error) {
-	//TODO implement me
-	panic("implement me")
+	return &account.SignedTransactionResponse{
+		Code: common2.ReturnCode_ERROR,
+		Msg:  "tron build signed tx not implemented",
+	}, nil
 }
 
 func (c *ChainAdaptor) DecodeTransaction(req *account.DecodeTransactionRequest) (*account.DecodeTransactionResponse, error) {
-	//TODO implement me
-	panic("implement me")
+	return &account.DecodeTransactionResponse{
+		Code: common2.ReturnCode_ERROR,
+		Msg:  "tron decode tx not implemented",
+	}, nil
 }
 
 func (c *ChainAdaptor) VerifySignedTransaction(req *account.VerifyTransactionRequest) (*account.VerifyTransactionResponse, error) {
-	//TODO implement me
-	panic("implement me")
+	return &account.VerifyTransactionResponse{
+		Code: common2.ReturnCode_ERROR,
+		Msg:  "tron verify signed tx not implemented",
+	}, nil
 }
 
 func NewChainAdaptor(conf *config.Config) (chain.IChainAdaptor, error) {
@@ -592,7 +602,10 @@ func (c *ChainAdaptor) GetExtraData(req *account.ExtraDataRequest) (*account.Ext
 }
 
 func (c *ChainAdaptor) GetNftListByAddress(req *account.NftAddressRequest) (*account.NftAddressResponse, error) {
-	panic("implement me")
+	return &account.NftAddressResponse{
+		Code: common2.ReturnCode_ERROR,
+		Msg:  "tron nft list not implemented",
+	}, nil
 }
 
 //
