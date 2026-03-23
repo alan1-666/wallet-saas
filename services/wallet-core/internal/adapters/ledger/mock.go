@@ -54,7 +54,7 @@ func (m *MockLedger) ReleaseWithdraw(_ context.Context, _, _, _, _ string) error
 }
 
 func (m *MockLedger) GetWithdrawStatus(_ context.Context, _, _ string) (ports.LedgerStatus, error) {
-	return ports.LedgerStatus{Status: "MOCK"}, nil
+	return ports.LedgerStatus{Status: "MOCK", QueueStatus: "MOCK"}, nil
 }
 
 func (m *MockLedger) CreditDeposit(_ context.Context, _ ports.DepositCreditInput) error {

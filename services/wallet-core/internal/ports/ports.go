@@ -114,10 +114,13 @@ type ChainBalance struct {
 }
 
 type LedgerStatus struct {
-	Status string
-	TxHash string
-	Reason string
-	Amount string
+	Status       string
+	TxHash       string
+	Reason       string
+	Amount       string
+	QueueStatus  string
+	AttemptCount int
+	LastError    string
 }
 
 type BalanceSnapshot struct {

@@ -682,22 +682,28 @@ WHERE tenant_id=$2 AND order_id=$3
 
 func (l *PostgresLedger) GetWithdrawStatus(ctx context.Context, tenantID, orderID string) (ports.LedgerStatus, error) {
 	var out ports.LedgerStatus
-	var queueStatus string
 	err := l.db.QueryRowContext(ctx, `
-SELECT lf.status, lf.tx_hash, lf.reason, lf.amount, COALESCE(wj.status, '')
+SELECT
+  lf.status,
+  lf.tx_hash,
+  lf.reason,
+  lf.amount,
+  COALESCE(wj.status, ''),
+  COALESCE(wj.attempt_count, 0),
+  COALESCE(wj.last_error, '')
 FROM ledger_freezes lf
 LEFT JOIN withdraw_jobs wj
   ON wj.tenant_id = lf.tenant_id
  AND wj.order_id = lf.order_id
 WHERE lf.tenant_id=$1 AND lf.order_id=$2
-`, tenantID, orderID).Scan(&out.Status, &out.TxHash, &out.Reason, &out.Amount, &queueStatus)
+`, tenantID, orderID).Scan(&out.Status, &out.TxHash, &out.Reason, &out.Amount, &out.QueueStatus, &out.AttemptCount, &out.LastError)
 	if err != nil {
 		return ports.LedgerStatus{}, err
 	}
 	if out.Status == "FROZEN" {
-		switch strings.ToUpper(strings.TrimSpace(queueStatus)) {
+		switch strings.ToUpper(strings.TrimSpace(out.QueueStatus)) {
 		case "QUEUED", "PROCESSING":
-			out.Status = strings.ToUpper(strings.TrimSpace(queueStatus))
+			out.Status = strings.ToUpper(strings.TrimSpace(out.QueueStatus))
 		}
 	}
 	return out, nil

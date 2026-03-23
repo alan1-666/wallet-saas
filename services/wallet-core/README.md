@@ -129,6 +129,7 @@ State orchestration and domain logic.
 - dispatcher can process different source addresses in parallel via `WALLET_WITHDRAW_DISPATCH_PARALLELISM`
 - broadcast success: `ConfirmWithdraw`
 - broadcast failure (or sign/build failure): `ReleaseWithdraw`
+- withdraw status query now includes queue-side `queue_status`, `attempt_count`, `last_error` for debugging queued dispatch failures
 - on-chain confirmation threshold for withdraw/sweep is taken from `chain_metadata.min_confirmations`
 - deposit credit threshold comes from `required_confirmations`; unlock threshold comes from `unlock_confirmations` and defaults to `chain_policies.safe_depth`
 - business risk controls are intentionally out of scope for wallet-core; projects should approve/deny withdrawals before calling the SaaS APIs
