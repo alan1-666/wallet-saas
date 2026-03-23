@@ -1,7 +1,9 @@
 package bootstrap
 
 import (
+	"context"
 	"net/http"
+	"time"
 
 	"wallet-saas-v2/services/wallet-core/internal/adapters/auth"
 	"wallet-saas-v2/services/wallet-core/internal/adapters/chain"
@@ -9,6 +11,7 @@ import (
 	"wallet-saas-v2/services/wallet-core/internal/adapters/registry"
 	signadapter "wallet-saas-v2/services/wallet-core/internal/adapters/sign"
 	"wallet-saas-v2/services/wallet-core/internal/config"
+	"wallet-saas-v2/services/wallet-core/internal/dispatcher"
 	"wallet-saas-v2/services/wallet-core/internal/orchestrator"
 	"wallet-saas-v2/services/wallet-core/internal/ports"
 	httptransport "wallet-saas-v2/services/wallet-core/internal/transport/http"
@@ -69,5 +72,15 @@ func Run() error {
 		ChainAddr:    chainClient,
 		Registry:     registryAdapter,
 	}
+	go (&dispatcher.WithdrawDispatcher{
+		Ledger:      ledgerAdapter,
+		Orch:        orch,
+		Interval:    time.Duration(cfg.WithdrawDispatchIntervalMs) * time.Millisecond,
+		Batch:       cfg.WithdrawDispatchBatch,
+		Parallelism: cfg.WithdrawDispatchParallelism,
+		MaxAttempts: cfg.WithdrawDispatchMaxAttempts,
+		BaseBackoff: time.Duration(cfg.WithdrawDispatchBaseBackoffMs) * time.Millisecond,
+		MaxBackoff:  time.Duration(cfg.WithdrawDispatchMaxBackoffMs) * time.Millisecond,
+	}).Run(context.Background())
 	return http.ListenAndServe(cfg.HTTPAddr, httptransport.NewMux(withdrawHandler))
 }

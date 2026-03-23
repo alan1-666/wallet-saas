@@ -101,6 +101,7 @@ type vout struct {
 
 type CreateWithdrawResponse struct {
 	TxHash string `json:"tx_hash"`
+	Status string `json:"status,omitempty"`
 }
 
 type WithdrawStatusResponse struct {

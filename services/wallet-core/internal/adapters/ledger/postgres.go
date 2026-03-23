@@ -3,10 +3,12 @@ package ledger
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/big"
 	"strings"
+	"time"
 
 	_ "github.com/lib/pq"
 
@@ -16,6 +18,8 @@ import (
 type PostgresLedger struct {
 	db *sql.DB
 }
+
+const withdrawJobLease = 30 * time.Second
 
 func NewPostgres(dsn string) (*PostgresLedger, error) {
 	db, err := sql.Open("postgres", dsn)
@@ -49,7 +53,86 @@ func (l *PostgresLedger) FreezeWithdraw(ctx context.Context, tenantID, accountID
 	defer func() {
 		_ = tx.Rollback()
 	}()
+	if err := l.freezeWithdrawTx(ctx, tx, tenantID, accountID, orderID, chain, network, asset, amount, requiredConfs); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
+func (l *PostgresLedger) QueueWithdraw(ctx context.Context, in ports.WithdrawQueueInput) error {
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	if err := l.freezeWithdrawTx(ctx, tx, in.TenantID, in.AccountID, in.OrderID, in.Tx.Chain, in.Tx.Network, in.Tx.Coin, in.Tx.Amount, in.RequiredConfs); err != nil {
+		return err
+	}
+
+	vinJSON, err := json.Marshal(in.Tx.Vin)
+	if err != nil {
+		return err
+	}
+	voutJSON, err := json.Marshal(in.Tx.Vout)
+	if err != nil {
+		return err
+	}
+	signersJSON, err := json.Marshal(in.Signers)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO withdraw_jobs (
+  tenant_id, account_id, order_id, chain, network, coin, from_address, to_address, amount,
+  contract_address, amount_unit, token_decimals, base64_tx, fee, vin_json, vout_json,
+  signers_json, sign_type, required_confirmations, status, next_retry_at, processing_started_at
+) VALUES (
+  $1,$2,$3,$4,$5,$6,$7,$8,$9,
+  $10,$11,$12,$13,$14,CAST($15 AS JSONB),CAST($16 AS JSONB),
+  CAST($17 AS JSONB),$18,$19,'QUEUED',NOW(),NULL
+)
+ON CONFLICT (tenant_id, order_id)
+DO UPDATE SET
+  account_id=EXCLUDED.account_id,
+  chain=EXCLUDED.chain,
+  network=EXCLUDED.network,
+  coin=EXCLUDED.coin,
+  from_address=EXCLUDED.from_address,
+  to_address=EXCLUDED.to_address,
+  amount=EXCLUDED.amount,
+  contract_address=EXCLUDED.contract_address,
+  amount_unit=EXCLUDED.amount_unit,
+  token_decimals=EXCLUDED.token_decimals,
+  base64_tx=EXCLUDED.base64_tx,
+  fee=EXCLUDED.fee,
+  vin_json=EXCLUDED.vin_json,
+  vout_json=EXCLUDED.vout_json,
+  signers_json=EXCLUDED.signers_json,
+  sign_type=EXCLUDED.sign_type,
+  required_confirmations=EXCLUDED.required_confirmations,
+  status=CASE
+    WHEN withdraw_jobs.status IN ('QUEUED', 'PROCESSING', 'BROADCASTED', 'DONE')
+      THEN withdraw_jobs.status
+    ELSE 'QUEUED'
+  END,
+  next_retry_at=NOW(),
+  processing_started_at=NULL,
+  last_error='',
+  updated_at=NOW()
+`, in.TenantID, in.AccountID, in.OrderID, in.Tx.Chain, in.Tx.Network, in.Tx.Coin, in.Tx.From, in.Tx.To, in.Tx.Amount,
+		in.Tx.ContractAddress, in.Tx.AmountUnit, int64(in.Tx.TokenDecimals), in.Tx.Base64Tx, in.Tx.Fee, string(vinJSON), string(voutJSON),
+		string(signersJSON), in.SignType, maxInt64(in.RequiredConfs, 1))
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (l *PostgresLedger) freezeWithdrawTx(ctx context.Context, tx *sql.Tx, tenantID, accountID, orderID, chain, network, asset, amount string, requiredConfs int64) error {
 	if asset == "" || chain == "" || network == "" {
 		return fmt.Errorf("chain/network/asset are required")
 	}
@@ -57,14 +140,14 @@ func (l *PostgresLedger) FreezeWithdraw(ctx context.Context, tenantID, accountID
 		requiredConfs = 1
 	}
 	var existingStatus string
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 SELECT status FROM ledger_freezes
 WHERE tenant_id=$1 AND order_id=$2
 FOR UPDATE
 `, tenantID, orderID).Scan(&existingStatus)
 	if err == nil {
 		if existingStatus == "FROZEN" || existingStatus == "BROADCASTED" || existingStatus == "CONFIRMED" {
-			return tx.Commit()
+			return nil
 		}
 		return fmt.Errorf("withdraw order already exists with status=%s", existingStatus)
 	}
@@ -119,7 +202,162 @@ ON CONFLICT (tenant_id, biz_type, biz_id, account_id, entry_side) DO NOTHING
 		return err
 	}
 
-	return tx.Commit()
+	return nil
+}
+
+func (l *PostgresLedger) ClaimQueuedWithdraws(ctx context.Context, limit int) ([]ports.WithdrawJob, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, err := tx.QueryContext(ctx, `
+WITH eligible AS (
+  SELECT
+    wj.id,
+    wj.created_at,
+    ROW_NUMBER() OVER (
+      PARTITION BY wj.tenant_id, LOWER(wj.chain), LOWER(wj.network), LOWER(wj.from_address)
+      ORDER BY wj.created_at ASC, wj.id ASC
+    ) AS sender_rank
+  FROM withdraw_jobs wj
+  JOIN ledger_freezes lf
+    ON lf.tenant_id = wj.tenant_id
+   AND lf.order_id = wj.order_id
+  WHERE lf.status='FROZEN'
+    AND (
+      (wj.status='QUEUED' AND wj.next_retry_at <= NOW())
+      OR (wj.status='PROCESSING' AND wj.processing_started_at IS NOT NULL AND wj.processing_started_at <= NOW() - ($2 * INTERVAL '1 millisecond'))
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM withdraw_jobs active
+      WHERE active.tenant_id = wj.tenant_id
+        AND LOWER(active.chain) = LOWER(wj.chain)
+        AND LOWER(active.network) = LOWER(wj.network)
+        AND LOWER(active.from_address) = LOWER(wj.from_address)
+        AND active.order_id <> wj.order_id
+        AND active.status IN ('PROCESSING')
+    )
+),
+picked AS (
+  SELECT wj.id
+  FROM withdraw_jobs wj
+  JOIN eligible e ON e.id = wj.id
+  WHERE e.sender_rank = 1
+  ORDER BY wj.created_at ASC, wj.id ASC
+  LIMIT $1
+  FOR UPDATE SKIP LOCKED
+)
+UPDATE withdraw_jobs w
+SET status='PROCESSING',
+    attempt_count=attempt_count+1,
+    processing_started_at=NOW(),
+    next_retry_at=NOW(),
+    updated_at=NOW()
+FROM picked
+WHERE w.id = picked.id
+RETURNING
+  w.id, w.tenant_id, w.account_id, w.order_id, w.required_confirmations, w.attempt_count,
+  w.chain, w.network, w.coin, w.from_address, w.to_address, w.amount,
+  w.contract_address, w.amount_unit, w.token_decimals, w.base64_tx, w.fee,
+  w.vin_json, w.vout_json, w.signers_json, w.sign_type
+`, limit, int64(withdrawJobLease/time.Millisecond))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]ports.WithdrawJob, 0, limit)
+	for rows.Next() {
+		var (
+			job               ports.WithdrawJob
+			tokenDecimals     int64
+			vinJSON, voutJSON string
+			signersJSON       string
+		)
+		if err := rows.Scan(
+			&job.ID,
+			&job.TenantID,
+			&job.AccountID,
+			&job.OrderID,
+			&job.RequiredConfs,
+			&job.AttemptCount,
+			&job.Tx.Chain,
+			&job.Tx.Network,
+			&job.Tx.Coin,
+			&job.Tx.From,
+			&job.Tx.To,
+			&job.Tx.Amount,
+			&job.Tx.ContractAddress,
+			&job.Tx.AmountUnit,
+			&tokenDecimals,
+			&job.Tx.Base64Tx,
+			&job.Tx.Fee,
+			&vinJSON,
+			&voutJSON,
+			&signersJSON,
+			&job.SignType,
+		); err != nil {
+			return nil, err
+		}
+		job.Tx.TokenDecimals = uint32(tokenDecimals)
+		if err := json.Unmarshal([]byte(vinJSON), &job.Tx.Vin); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(voutJSON), &job.Tx.Vout); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(signersJSON), &job.Signers); err != nil {
+			return nil, err
+		}
+		out = append(out, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (l *PostgresLedger) MarkQueuedWithdrawDone(ctx context.Context, tenantID, orderID, txHash string) error {
+	_, err := l.db.ExecContext(ctx, `
+UPDATE withdraw_jobs
+SET status='BROADCASTED', tx_hash=$1, last_error='', processing_started_at=NULL, updated_at=NOW()
+WHERE tenant_id=$2 AND order_id=$3
+`, txHash, tenantID, orderID)
+	return err
+}
+
+func (l *PostgresLedger) RescheduleQueuedWithdraw(ctx context.Context, tenantID, orderID, reason string, delay time.Duration) error {
+	if delay < 0 {
+		delay = 0
+	}
+	_, err := l.db.ExecContext(ctx, `
+UPDATE withdraw_jobs
+SET status='QUEUED',
+    last_error=$1,
+    next_retry_at=NOW() + ($2 * INTERVAL '1 millisecond'),
+    processing_started_at=NULL,
+    updated_at=NOW()
+WHERE tenant_id=$3 AND order_id=$4
+`, reason, int64(delay/time.Millisecond), tenantID, orderID)
+	return err
+}
+
+func (l *PostgresLedger) MarkQueuedWithdrawFailed(ctx context.Context, tenantID, orderID, reason string) error {
+	_, err := l.db.ExecContext(ctx, `
+UPDATE withdraw_jobs
+SET status='FAILED', last_error=$1, processing_started_at=NULL, updated_at=NOW()
+WHERE tenant_id=$2 AND order_id=$3
+`, reason, tenantID, orderID)
+	return err
 }
 
 func (l *PostgresLedger) ConfirmWithdraw(ctx context.Context, tenantID, accountID, orderID, txHash string) error {
@@ -159,6 +397,11 @@ WHERE tenant_id=$2 AND order_id=$3
 `, txHash, tenantID, orderID); err != nil {
 		return err
 	}
+	_, _ = tx.ExecContext(ctx, `
+UPDATE withdraw_jobs
+SET status='BROADCASTED', tx_hash=$1, last_error='', processing_started_at=NULL, updated_at=NOW()
+WHERE tenant_id=$2 AND order_id=$3
+`, txHash, tenantID, orderID)
 	return tx.Commit()
 }
 
@@ -218,6 +461,11 @@ WHERE tenant_id=$4 AND order_id=$5
 		if err != nil {
 			return err
 		}
+		_, _ = tx.ExecContext(ctx, `
+UPDATE withdraw_jobs
+SET status='BROADCASTED', tx_hash=$1, last_error='', processing_started_at=NULL, updated_at=NOW()
+WHERE tenant_id=$2 AND order_id=$3
+`, txHash, tenantID, orderID)
 		return tx.Commit()
 	}
 
@@ -260,6 +508,11 @@ ON CONFLICT (tenant_id, biz_type, biz_id, account_id, entry_side) DO NOTHING
 `, tenantID, orderID, accountID, asset, amount, current.Available); err != nil {
 		return err
 	}
+	_, _ = tx.ExecContext(ctx, `
+UPDATE withdraw_jobs
+SET status='DONE', tx_hash=$1, last_error='', processing_started_at=NULL, updated_at=NOW()
+WHERE tenant_id=$2 AND order_id=$3
+`, txHash, tenantID, orderID)
 	return tx.Commit()
 }
 
@@ -333,6 +586,11 @@ ON CONFLICT (tenant_id, biz_type, biz_id, account_id, entry_side) DO NOTHING
 `, tenantID, orderID, accountID, asset, amount, avail); err != nil {
 		return err
 	}
+	_, _ = tx.ExecContext(ctx, `
+UPDATE withdraw_jobs
+SET status='FAILED', last_error=$1, processing_started_at=NULL, updated_at=NOW()
+WHERE tenant_id=$2 AND order_id=$3
+`, reason, tenantID, orderID)
 	return tx.Commit()
 }
 
@@ -413,19 +671,34 @@ ON CONFLICT (tenant_id, biz_type, biz_id, account_id, entry_side) DO NOTHING
 `, tenantID, orderID, accountID, asset, amount, avail); err != nil {
 		return err
 	}
+	_, _ = tx.ExecContext(ctx, `
+UPDATE withdraw_jobs
+SET status='RELEASED', last_error=$1, processing_started_at=NULL, updated_at=NOW()
+WHERE tenant_id=$2 AND order_id=$3
+`, reason, tenantID, orderID)
 
 	return tx.Commit()
 }
 
 func (l *PostgresLedger) GetWithdrawStatus(ctx context.Context, tenantID, orderID string) (ports.LedgerStatus, error) {
 	var out ports.LedgerStatus
+	var queueStatus string
 	err := l.db.QueryRowContext(ctx, `
-SELECT status, tx_hash, reason, amount
-FROM ledger_freezes
-WHERE tenant_id=$1 AND order_id=$2
-`, tenantID, orderID).Scan(&out.Status, &out.TxHash, &out.Reason, &out.Amount)
+SELECT lf.status, lf.tx_hash, lf.reason, lf.amount, COALESCE(wj.status, '')
+FROM ledger_freezes lf
+LEFT JOIN withdraw_jobs wj
+  ON wj.tenant_id = lf.tenant_id
+ AND wj.order_id = lf.order_id
+WHERE lf.tenant_id=$1 AND lf.order_id=$2
+`, tenantID, orderID).Scan(&out.Status, &out.TxHash, &out.Reason, &out.Amount, &queueStatus)
 	if err != nil {
 		return ports.LedgerStatus{}, err
+	}
+	if out.Status == "FROZEN" {
+		switch strings.ToUpper(strings.TrimSpace(queueStatus)) {
+		case "QUEUED", "PROCESSING":
+			out.Status = strings.ToUpper(strings.TrimSpace(queueStatus))
+		}
 	}
 	return out, nil
 }
@@ -887,6 +1160,37 @@ balance_after TEXT NOT NULL,
 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 UNIQUE (tenant_id, biz_type, biz_id, account_id, entry_side)
 );`,
+		`CREATE TABLE IF NOT EXISTS withdraw_jobs (
+id BIGSERIAL PRIMARY KEY,
+tenant_id TEXT NOT NULL,
+account_id TEXT NOT NULL,
+order_id TEXT NOT NULL,
+chain TEXT NOT NULL,
+network TEXT NOT NULL,
+coin TEXT NOT NULL,
+from_address TEXT NOT NULL DEFAULT '',
+to_address TEXT NOT NULL DEFAULT '',
+amount TEXT NOT NULL,
+contract_address TEXT NOT NULL DEFAULT '',
+amount_unit TEXT NOT NULL DEFAULT '',
+token_decimals BIGINT NOT NULL DEFAULT 0,
+base64_tx TEXT NOT NULL DEFAULT '',
+fee TEXT NOT NULL DEFAULT '',
+vin_json JSONB NOT NULL DEFAULT '[]',
+vout_json JSONB NOT NULL DEFAULT '[]',
+signers_json JSONB NOT NULL DEFAULT '[]',
+sign_type TEXT NOT NULL DEFAULT '',
+required_confirmations BIGINT NOT NULL DEFAULT 1,
+status TEXT NOT NULL DEFAULT 'QUEUED',
+tx_hash TEXT NOT NULL DEFAULT '',
+last_error TEXT NOT NULL DEFAULT '',
+attempt_count INT NOT NULL DEFAULT 0,
+next_retry_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+processing_started_at TIMESTAMPTZ NULL,
+created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+UNIQUE (tenant_id, order_id)
+);`,
 		`CREATE TABLE IF NOT EXISTS deposit_events (
 id BIGSERIAL PRIMARY KEY,
 tenant_id TEXT NOT NULL,
@@ -980,6 +1284,12 @@ UNIQUE (tenant_id, biz_type, biz_id, treasury_account_id, entry_side)
 		`ALTER TABLE ledger_freezes ADD COLUMN IF NOT EXISTS required_confirmations BIGINT NOT NULL DEFAULT 1;`,
 		`ALTER TABLE ledger_entries ADD COLUMN IF NOT EXISTS asset TEXT NOT NULL DEFAULT '';`,
 		`ALTER TABLE ledger_balances ADD COLUMN IF NOT EXISTS withdraw_locked TEXT NOT NULL DEFAULT '0';`,
+		`ALTER TABLE withdraw_jobs ADD COLUMN IF NOT EXISTS tx_hash TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE withdraw_jobs ADD COLUMN IF NOT EXISTS last_error TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE withdraw_jobs ADD COLUMN IF NOT EXISTS attempt_count INT NOT NULL DEFAULT 0;`,
+		`ALTER TABLE withdraw_jobs ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ NOT NULL DEFAULT NOW();`,
+		`ALTER TABLE withdraw_jobs ADD COLUMN IF NOT EXISTS processing_started_at TIMESTAMPTZ NULL;`,
+		`ALTER TABLE withdraw_jobs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();`,
 		`ALTER TABLE deposit_events ADD COLUMN IF NOT EXISTS required_confirmations BIGINT NOT NULL DEFAULT 1;`,
 		`ALTER TABLE deposit_events ADD COLUMN IF NOT EXISTS unlock_confirmations BIGINT NOT NULL DEFAULT 1;`,
 		`ALTER TABLE deposit_events ADD COLUMN IF NOT EXISTS credited BOOLEAN NOT NULL DEFAULT FALSE;`,
@@ -1002,9 +1312,14 @@ UNIQUE (tenant_id, biz_type, biz_id, treasury_account_id, entry_side)
 	_, _ = l.db.ExecContext(ctx, `UPDATE ledger_freezes SET network='unknown' WHERE network='' OR network IS NULL`)
 	_, _ = l.db.ExecContext(ctx, `UPDATE deposit_events SET network='unknown' WHERE network='' OR network IS NULL`)
 	_, _ = l.db.ExecContext(ctx, `UPDATE sweep_orders SET network='unknown' WHERE network='' OR network IS NULL`)
+	_, _ = l.db.ExecContext(ctx, `UPDATE withdraw_jobs SET network='unknown' WHERE network='' OR network IS NULL`)
+	_, _ = l.db.ExecContext(ctx, `UPDATE withdraw_jobs SET next_retry_at=NOW() WHERE next_retry_at IS NULL`)
 	_, _ = l.db.ExecContext(ctx, `ALTER TABLE ledger_freezes ALTER COLUMN network DROP DEFAULT`)
 	_, _ = l.db.ExecContext(ctx, `ALTER TABLE deposit_events ALTER COLUMN network DROP DEFAULT`)
 	_, _ = l.db.ExecContext(ctx, `ALTER TABLE sweep_orders ALTER COLUMN network DROP DEFAULT`)
+	_, _ = l.db.ExecContext(ctx, `ALTER TABLE withdraw_jobs ALTER COLUMN network DROP DEFAULT`)
+	_, _ = l.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_withdraw_jobs_status_retry ON withdraw_jobs (status, next_retry_at, created_at, id)`)
+	_, _ = l.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_withdraw_jobs_sender_status ON withdraw_jobs (tenant_id, chain, network, from_address, status, created_at, id)`)
 	return nil
 }
 

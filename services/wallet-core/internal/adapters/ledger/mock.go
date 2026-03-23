@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"context"
+	"time"
 
 	"wallet-saas-v2/services/wallet-core/internal/ports"
 )
@@ -13,6 +14,26 @@ func NewMock() *MockLedger {
 }
 
 func (m *MockLedger) FreezeWithdraw(_ context.Context, _, _, _, _, _, _, _ string, _ int64) error {
+	return nil
+}
+
+func (m *MockLedger) QueueWithdraw(_ context.Context, _ ports.WithdrawQueueInput) error {
+	return nil
+}
+
+func (m *MockLedger) ClaimQueuedWithdraws(_ context.Context, _ int) ([]ports.WithdrawJob, error) {
+	return nil, nil
+}
+
+func (m *MockLedger) MarkQueuedWithdrawDone(_ context.Context, _, _, _ string) error {
+	return nil
+}
+
+func (m *MockLedger) RescheduleQueuedWithdraw(_ context.Context, _, _, _ string, _ time.Duration) error {
+	return nil
+}
+
+func (m *MockLedger) MarkQueuedWithdrawFailed(_ context.Context, _, _, _ string) error {
 	return nil
 }
 

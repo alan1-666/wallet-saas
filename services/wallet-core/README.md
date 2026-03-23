@@ -122,7 +122,11 @@ State orchestration and domain logic.
 - If `key_ids` length is less than input count, last key will be reused for remaining inputs.
 
 ### Ledger flow
-- before sign/broadcast: `FreezeWithdraw`
+- withdraw create now enqueues a job and freezes funds in one transaction
+- dispatcher status flow is `QUEUED -> PROCESSING -> BROADCASTED -> CONFIRMED`, with failure path `PROCESSING -> QUEUED(retry)` and terminal failure `PROCESSING -> RELEASED/FAILED`
+- stale `PROCESSING` jobs are re-claimed after lease timeout; retries use exponential backoff until `WALLET_WITHDRAW_DISPATCH_MAX_ATTEMPTS`
+- same `from_address` is serialized only while a job is actively `PROCESSING`; once a tx is `BROADCASTED`, the next queued job for that address can be picked and will rely on the chain gateway's pending nonce resolution
+- dispatcher can process different source addresses in parallel via `WALLET_WITHDRAW_DISPATCH_PARALLELISM`
 - broadcast success: `ConfirmWithdraw`
 - broadcast failure (or sign/build failure): `ReleaseWithdraw`
 - on-chain confirmation threshold for withdraw/sweep is taken from `chain_metadata.min_confirmations`
@@ -132,7 +136,7 @@ State orchestration and domain logic.
 ## New tables
 - `api_tokens`, `tenant_keys`, `audit_logs`
 - `idem_requests`
-- `deposit_events`, `sweep_orders`
+- `deposit_events`, `sweep_orders`, `withdraw_jobs`
 - `ledger_audit_events`
 - `ledger_balances`, `ledger_journals`
 - `wallet_accounts`, `wallet_addresses`
@@ -145,3 +149,9 @@ State orchestration and domain logic.
 - `SIGN_SERVICE_TOKEN` shared internal auth token for `sign-service` (default `dev-sign-token`)
 - `CHAIN_GATEWAY_GRPC_ADDR` (default `127.0.0.1:9082`, internal call path)
 - `WALLET_DB_DSN` (optional, enables postgres-backed ledger/auth/registry adapters)
+- `WALLET_WITHDRAW_DISPATCH_INTERVAL_MS` background withdraw dispatcher poll interval (default `1000`)
+- `WALLET_WITHDRAW_DISPATCH_BATCH` background withdraw dispatcher batch size (default `8`)
+- `WALLET_WITHDRAW_DISPATCH_PARALLELISM` max concurrent withdraw executions per dispatcher loop across different `from_address` values (default `4`)
+- `WALLET_WITHDRAW_DISPATCH_MAX_ATTEMPTS` max automatic withdraw dispatch attempts before release/fail (default `5`)
+- `WALLET_WITHDRAW_DISPATCH_BASE_BACKOFF_MS` first retry delay for dispatcher failures (default `1000`)
+- `WALLET_WITHDRAW_DISPATCH_MAX_BACKOFF_MS` max retry delay cap for dispatcher failures (default `30000`)

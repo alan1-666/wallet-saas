@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strings"
 
-	"wallet-saas-v2/services/wallet-core/internal/orchestrator"
 	"wallet-saas-v2/services/wallet-core/internal/ports"
 )
 
@@ -57,14 +56,15 @@ func (h *WithdrawHandler) Create(w http.ResponseWriter, r *http.Request) {
 		switch existing.Status {
 		case "CONFIRMED":
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(CreateWithdrawResponse{TxHash: existing.TxHash})
+			_ = json.NewEncoder(w).Encode(CreateWithdrawResponse{TxHash: existing.TxHash, Status: existing.Status})
 			return
 		case "BROADCASTED":
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(CreateWithdrawResponse{TxHash: existing.TxHash})
+			_ = json.NewEncoder(w).Encode(CreateWithdrawResponse{TxHash: existing.TxHash, Status: existing.Status})
 			return
-		case "FROZEN":
-			http.Error(w, "withdraw order is processing", http.StatusConflict)
+		case "QUEUED", "PROCESSING", "FROZEN":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(CreateWithdrawResponse{Status: existing.Status, TxHash: existing.TxHash})
 			return
 		default:
 			http.Error(w, "withdraw order already exists with status="+existing.Status, http.StatusConflict)
@@ -99,7 +99,7 @@ func (h *WithdrawHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	txHash, err := h.Orchestrator.CreateAndBroadcast(r.Context(), orchestrator.WithdrawRequest{
+	if err := h.Ledger.QueueWithdraw(r.Context(), ports.WithdrawQueueInput{
 		TenantID:      req.TenantID,
 		AccountID:     req.AccountID,
 		OrderID:       req.OrderID,
@@ -107,14 +107,13 @@ func (h *WithdrawHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Signers:       signers,
 		SignType:      req.SignType,
 		Tx:            tx,
-	})
-	if err != nil {
+	}); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(CreateWithdrawResponse{TxHash: txHash})
+	_ = json.NewEncoder(w).Encode(CreateWithdrawResponse{Status: "QUEUED"})
 }
 
 func (h *WithdrawHandler) resolveWithdrawSigners(ctx context.Context, req CreateWithdrawRequest) ([]ports.SignerRef, error) {

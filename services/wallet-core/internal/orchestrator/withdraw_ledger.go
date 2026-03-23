@@ -17,3 +17,7 @@ func (o *WithdrawOrchestrator) releaseWithdraw(ctx context.Context, req Withdraw
 func (o *WithdrawOrchestrator) confirmWithdraw(ctx context.Context, req WithdrawRequest, txHash string) error {
 	return o.Ledger.ConfirmWithdraw(ctx, req.TenantID, req.AccountID, req.OrderID, txHash)
 }
+
+func (o *WithdrawOrchestrator) ReleaseQueued(ctx context.Context, req WithdrawRequest, reason string) error {
+	return o.releaseWithdraw(ctx, req, reason)
+}
