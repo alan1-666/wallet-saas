@@ -1,9 +1,11 @@
 package hsm
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 var (
@@ -20,10 +22,18 @@ type CloudHSMConfig struct {
 }
 
 type CloudHSMBackend struct {
-	cfg CloudHSMConfig
+	cfg             CloudHSMConfig
+	sessionProvider PKCS11Provider
+
+	mu      sync.Mutex
+	session PKCS11Session
 }
 
 func NewCloudHSMBackend(cfg CloudHSMConfig) (*CloudHSMBackend, error) {
+	return NewCloudHSMBackendWithSessionProvider(cfg, NewNoopPKCS11Provider())
+}
+
+func NewCloudHSMBackendWithSessionProvider(cfg CloudHSMConfig, provider PKCS11Provider) (*CloudHSMBackend, error) {
 	cfg.ClusterID = strings.TrimSpace(cfg.ClusterID)
 	cfg.Region = strings.TrimSpace(cfg.Region)
 	cfg.User = strings.TrimSpace(cfg.User)
@@ -32,10 +42,20 @@ func NewCloudHSMBackend(cfg CloudHSMConfig) (*CloudHSMBackend, error) {
 	if cfg.ClusterID == "" || cfg.Region == "" || cfg.User == "" || cfg.PIN == "" || cfg.PKCS11Lib == "" {
 		return nil, fmt.Errorf("%w: cluster_id/region/user/pin/pkcs11_lib are required", ErrCloudHSMNotConfigured)
 	}
-	return &CloudHSMBackend{cfg: cfg}, nil
+	if provider == nil {
+		provider = NewNoopPKCS11Provider()
+	}
+	return &CloudHSMBackend{cfg: cfg, sessionProvider: provider}, nil
 }
 
 func (b *CloudHSMBackend) Close() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.session != nil {
+		err := b.session.Close()
+		b.session = nil
+		return err
+	}
 	return nil
 }
 
@@ -44,5 +64,45 @@ func (b *CloudHSMBackend) LoadOrCreateSeed(slotID string) ([]byte, error) {
 	if slotID == "" {
 		return nil, fmt.Errorf("slot id is required")
 	}
-	return nil, fmt.Errorf("%w: slot=%s cluster_id=%s region=%s", ErrCloudHSMNotImplemented, slotID, b.cfg.ClusterID, b.cfg.Region)
+	session, err := b.openSession()
+	if err != nil {
+		return nil, err
+	}
+
+	seed, err := session.LoadSeed(slotID)
+	switch {
+	case err == nil && len(seed) > 0:
+		return append([]byte(nil), seed...), nil
+	case err != nil && !errors.Is(err, ErrPKCS11ObjectNotFound):
+		return nil, err
+	}
+
+	seed = make([]byte, 64)
+	if _, err := rand.Read(seed); err != nil {
+		return nil, err
+	}
+	if err := session.StoreSeed(slotID, seed); err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), seed...), nil
+}
+
+func (b *CloudHSMBackend) openSession() (PKCS11Session, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.session != nil {
+		return b.session, nil
+	}
+	session, err := b.sessionProvider.Open(PKCS11Config{
+		ClusterID:  b.cfg.ClusterID,
+		Region:     b.cfg.Region,
+		User:       b.cfg.User,
+		PIN:        b.cfg.PIN,
+		ModulePath: b.cfg.PKCS11Lib,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%w: cluster_id=%s region=%s", err, b.cfg.ClusterID, b.cfg.Region)
+	}
+	b.session = session
+	return b.session, nil
 }

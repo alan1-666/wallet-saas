@@ -28,6 +28,7 @@ Signing boundary service.
 ## Current model
 - `sign-service` now depends on a custody provider interface; the current implementation is `local-hsm`
 - underneath the custody provider there is now a separate HSM backend interface; the current implementations are `software` and a `cloudhsm` placeholder backend
+- the `cloudhsm` backend now also includes a PKCS#11 session/provider skeleton, so local tests can exercise session lifecycle and slot persistence without talking to a real cluster
 - master material is loaded from a logical HSM slot per sign type; the current implementation uses a local software-backed slot store as the backend, so it can later be replaced by CloudHSM/PKCS#11 style backends without changing the gRPC contract
 - `DeriveKey` returns child public key material for the requested `key_id`
 - ECDSA chains additionally return account-level public derivation material (`account xpub` equivalent: compressed public key + chain code), so callers can derive child public keys without asking the signer to materialize child private keys
@@ -41,7 +42,8 @@ Signing boundary service.
 
 ## How To Test
 - local development does not require any AWS resource: keep `SIGN_HSM_BACKEND=software`
-- local unit tests already cover the `cloudhsm` placeholder backend and verify config/bootstrapping behavior
+- local unit tests already cover the `cloudhsm` placeholder backend and a fake PKCS#11 session provider
+- startup now validates backend-specific env upfront, so `SIGN_HSM_BACKEND=cloudhsm` without the required CloudHSM variables will fail fast before the gRPC server starts
 - real CloudHSM integration testing will require:
   - an AWS account with a CloudHSM cluster
   - a VPC-reachable client host/container

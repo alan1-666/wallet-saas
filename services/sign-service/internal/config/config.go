@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -104,5 +105,29 @@ func Load() Config {
 		CloudHSMUser:         cloudHSMUser,
 		CloudHSMPIN:          cloudHSMPIN,
 		CloudHSMPKCS11Lib:    cloudHSMPKCS11Lib,
+	}
+}
+
+func (c Config) Validate() error {
+	switch strings.TrimSpace(c.CustodyProvider) {
+	case "", "local-hsm":
+	default:
+		return fmt.Errorf("unsupported custody provider: %s", c.CustodyProvider)
+	}
+
+	switch strings.TrimSpace(c.HSMBackend) {
+	case "", "software":
+		return nil
+	case "cloudhsm":
+		if strings.TrimSpace(c.CloudHSMClusterID) == "" ||
+			strings.TrimSpace(c.CloudHSMRegion) == "" ||
+			strings.TrimSpace(c.CloudHSMUser) == "" ||
+			strings.TrimSpace(c.CloudHSMPIN) == "" ||
+			strings.TrimSpace(c.CloudHSMPKCS11Lib) == "" {
+			return fmt.Errorf("cloudhsm backend requires SIGN_CLOUDHSM_CLUSTER_ID, SIGN_CLOUDHSM_REGION, SIGN_CLOUDHSM_USER, SIGN_CLOUDHSM_PIN, SIGN_CLOUDHSM_PKCS11_LIB")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported hsm backend: %s", c.HSMBackend)
 	}
 }

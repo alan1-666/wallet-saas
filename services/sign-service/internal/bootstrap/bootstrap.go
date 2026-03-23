@@ -13,29 +13,24 @@ import (
 
 func Run() error {
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
 
-	var backend hsm.Backend
-	switch cfg.HSMBackend {
-	case "software":
-		b, err := hsm.NewSoftwareBackend(cfg.LevelDBPath, "software")
-		if err != nil {
-			return err
-		}
-		backend = b
-	case "cloudhsm":
-		b, err := hsm.NewCloudHSMBackend(hsm.CloudHSMConfig{
+	backend, err := hsm.NewBackend(hsm.FactoryConfig{
+		Backend:     cfg.HSMBackend,
+		LevelDBPath: cfg.LevelDBPath,
+		Namespace:   "software",
+		CloudHSM: hsm.CloudHSMConfig{
 			ClusterID: cfg.CloudHSMClusterID,
 			Region:    cfg.CloudHSMRegion,
 			User:      cfg.CloudHSMUser,
 			PIN:       cfg.CloudHSMPIN,
 			PKCS11Lib: cfg.CloudHSMPKCS11Lib,
-		})
-		if err != nil {
-			return err
-		}
-		backend = b
-	default:
-		return fmt.Errorf("unsupported hsm backend: %s", cfg.HSMBackend)
+		},
+	})
+	if err != nil {
+		return err
 	}
 
 	var provider custody.Provider
