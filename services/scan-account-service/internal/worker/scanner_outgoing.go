@@ -25,16 +25,22 @@ func (s *Scanner) scanOutgoingConfirmations(ctx context.Context) error {
 			continue
 		}
 		if !finality.Found {
+			if strings.EqualFold(strings.TrimSpace(it.AttemptStatus), "REPLACED") {
+				continue
+			}
 			if err := s.handleMissingOutgoingTx(ctx, outgoingKindWithdraw, it.TenantID, it.OrderID, it.Chain, it.Network, it.TxHash, it.RequiredConfs, it.BroadcastedAt, false); err != nil {
 				log.Printf("withdraw missing tx handling failed tenant=%s order=%s tx=%s err=%v", it.TenantID, it.OrderID, it.TxHash, err)
 			}
 			continue
 		}
-		_ = s.Store.ClearOutgoingNotFound(ctx, outgoingKindWithdraw, it.TenantID, it.OrderID)
+		_ = s.Store.ClearOutgoingNotFound(ctx, outgoingKindWithdraw, it.TenantID, it.OrderID, it.TxHash)
 		status := "CONFIRMED"
 		reason := ""
 		switch strings.ToUpper(strings.TrimSpace(finality.Status)) {
 		case "REVERTED", "FAILED":
+			if strings.EqualFold(strings.TrimSpace(it.AttemptStatus), "REPLACED") {
+				continue
+			}
 			status = "FAILED"
 			reason = "onchain tx reverted"
 		case "PENDING":
@@ -77,7 +83,7 @@ func (s *Scanner) scanOutgoingConfirmations(ctx context.Context) error {
 			}
 			continue
 		}
-		_ = s.Store.ClearOutgoingNotFound(ctx, outgoingKindSweep, it.TenantID, it.SweepOrderID)
+		_ = s.Store.ClearOutgoingNotFound(ctx, outgoingKindSweep, it.TenantID, it.SweepOrderID, it.TxHash)
 		status := "CONFIRMED"
 		reason := ""
 		switch strings.ToUpper(strings.TrimSpace(finality.Status)) {
@@ -152,5 +158,5 @@ func (s *Scanner) handleMissingOutgoingTx(ctx context.Context, kind, tenantID, o
 		}
 		log.Printf("withdraw onchain notified tenant=%s order=%s tx=%s status=FAILED reason=%s", tenantID, orderID, txHash, reason)
 	}
-	return s.Store.ClearOutgoingNotFound(ctx, kind, tenantID, orderID)
+	return s.Store.ClearOutgoingNotFound(ctx, kind, tenantID, orderID, txHash)
 }

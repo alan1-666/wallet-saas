@@ -89,11 +89,11 @@ func (l *PostgresLedger) QueueWithdraw(ctx context.Context, in ports.WithdrawQue
 INSERT INTO withdraw_jobs (
   tenant_id, account_id, order_id, chain, network, coin, from_address, to_address, amount,
   contract_address, amount_unit, token_decimals, base64_tx, fee, vin_json, vout_json,
-  signers_json, sign_type, required_confirmations, status, next_retry_at, processing_started_at
+  signers_json, sign_type, required_confirmations, status, next_retry_at, processing_started_at, replacement_count
 ) VALUES (
   $1,$2,$3,$4,$5,$6,$7,$8,$9,
   $10,$11,$12,$13,$14,CAST($15 AS JSONB),CAST($16 AS JSONB),
-  CAST($17 AS JSONB),$18,$19,'QUEUED',NOW(),NULL
+  CAST($17 AS JSONB),$18,$19,'QUEUED',NOW(),NULL,0
 )
 ON CONFLICT (tenant_id, order_id)
 DO UPDATE SET
@@ -122,6 +122,11 @@ DO UPDATE SET
   next_retry_at=NOW(),
   processing_started_at=NULL,
   last_error='',
+  replacement_count=CASE
+    WHEN withdraw_jobs.status IN ('BROADCASTED', 'DONE')
+      THEN withdraw_jobs.replacement_count
+    ELSE 0
+  END,
   updated_at=NOW()
 `, in.TenantID, in.AccountID, in.OrderID, in.Tx.Chain, in.Tx.Network, in.Tx.Coin, in.Tx.From, in.Tx.To, in.Tx.Amount,
 		in.Tx.ContractAddress, in.Tx.AmountUnit, int64(in.Tx.TokenDecimals), in.Tx.Base64Tx, in.Tx.Fee, string(vinJSON), string(voutJSON),
@@ -262,7 +267,7 @@ SET status='PROCESSING',
 FROM picked
 WHERE w.id = picked.id
 RETURNING
-  w.id, w.tenant_id, w.account_id, w.order_id, w.required_confirmations, w.attempt_count,
+  w.id, w.tenant_id, w.account_id, w.order_id, w.tx_hash, w.required_confirmations, w.attempt_count, w.replacement_count,
   w.chain, w.network, w.coin, w.from_address, w.to_address, w.amount,
   w.contract_address, w.amount_unit, w.token_decimals, w.base64_tx, w.fee,
   w.vin_json, w.vout_json, w.signers_json, w.sign_type
@@ -285,8 +290,10 @@ RETURNING
 			&job.TenantID,
 			&job.AccountID,
 			&job.OrderID,
+			&job.TxHash,
 			&job.RequiredConfs,
 			&job.AttemptCount,
+			&job.ReplaceCount,
 			&job.Tx.Chain,
 			&job.Tx.Network,
 			&job.Tx.Coin,
@@ -326,13 +333,28 @@ RETURNING
 	return out, nil
 }
 
-func (l *PostgresLedger) MarkQueuedWithdrawDone(ctx context.Context, tenantID, orderID, txHash string) error {
-	_, err := l.db.ExecContext(ctx, `
+func (l *PostgresLedger) MarkQueuedWithdrawDone(ctx context.Context, tenantID, orderID, txHash, unsignedTx string) error {
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
 UPDATE withdraw_jobs
-SET status='BROADCASTED', tx_hash=$1, last_error='', processing_started_at=NULL, updated_at=NOW()
-WHERE tenant_id=$2 AND order_id=$3
-`, txHash, tenantID, orderID)
-	return err
+SET status='BROADCASTED', tx_hash=$1, base64_tx=$2, last_error='', processing_started_at=NULL, updated_at=NOW()
+WHERE tenant_id=$3 AND order_id=$4
+`, txHash, strings.TrimSpace(unsignedTx), tenantID, orderID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO withdraw_tx_attempts (tenant_id, order_id, tx_hash, unsigned_tx, status)
+VALUES ($1,$2,$3,$4,'BROADCASTED')
+ON CONFLICT (tenant_id, tx_hash)
+DO UPDATE SET unsigned_tx=EXCLUDED.unsigned_tx, status='BROADCASTED', updated_at=NOW()
+`, tenantID, orderID, txHash, strings.TrimSpace(unsignedTx)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (l *PostgresLedger) RescheduleQueuedWithdraw(ctx context.Context, tenantID, orderID, reason string, delay time.Duration) error {
@@ -355,6 +377,193 @@ func (l *PostgresLedger) MarkQueuedWithdrawFailed(ctx context.Context, tenantID,
 	_, err := l.db.ExecContext(ctx, `
 UPDATE withdraw_jobs
 SET status='FAILED', last_error=$1, processing_started_at=NULL, updated_at=NOW()
+WHERE tenant_id=$2 AND order_id=$3
+`, reason, tenantID, orderID)
+	return err
+}
+
+func (l *PostgresLedger) ClaimStaleBroadcastedWithdraws(ctx context.Context, limit int, minAge time.Duration, maxReplacements int) ([]ports.WithdrawJob, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if minAge <= 0 {
+		minAge = time.Minute
+	}
+	if maxReplacements <= 0 {
+		maxReplacements = 3
+	}
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, err := tx.QueryContext(ctx, `
+WITH eligible AS (
+  SELECT
+    wj.id,
+    wj.created_at,
+    ROW_NUMBER() OVER (
+      PARTITION BY wj.tenant_id, LOWER(wj.chain), LOWER(wj.network), LOWER(wj.from_address)
+      ORDER BY wj.updated_at ASC, wj.id ASC
+    ) AS sender_rank
+  FROM withdraw_jobs wj
+  JOIN ledger_freezes lf
+    ON lf.tenant_id = wj.tenant_id
+   AND lf.order_id = wj.order_id
+  WHERE lf.status='BROADCASTED'
+    AND COALESCE(lf.confirmations, 0) = 0
+    AND LOWER(wj.chain) IN ('ethereum','binance','polygon','arbitrum','optimism','linea','scroll','mantle','zksync')
+    AND COALESCE(wj.base64_tx, '') <> ''
+    AND COALESCE(wj.replacement_count, 0) < $2
+    AND (
+      (wj.status='BROADCASTED' AND wj.updated_at <= NOW() - ($3 * INTERVAL '1 millisecond'))
+      OR (wj.status='ACCELERATING' AND wj.processing_started_at IS NOT NULL AND wj.processing_started_at <= NOW() - ($4 * INTERVAL '1 millisecond'))
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM withdraw_jobs active
+      WHERE active.tenant_id = wj.tenant_id
+        AND LOWER(active.chain) = LOWER(wj.chain)
+        AND LOWER(active.network) = LOWER(wj.network)
+        AND LOWER(active.from_address) = LOWER(wj.from_address)
+        AND active.order_id <> wj.order_id
+        AND active.status IN ('PROCESSING', 'ACCELERATING')
+    )
+),
+picked AS (
+  SELECT wj.id
+  FROM withdraw_jobs wj
+  JOIN eligible e ON e.id = wj.id
+  WHERE e.sender_rank = 1
+  ORDER BY wj.updated_at ASC, wj.id ASC
+  LIMIT $1
+  FOR UPDATE SKIP LOCKED
+)
+UPDATE withdraw_jobs w
+SET status='ACCELERATING',
+    processing_started_at=NOW(),
+    updated_at=NOW()
+FROM picked
+WHERE w.id = picked.id
+RETURNING
+  w.id, w.tenant_id, w.account_id, w.order_id, w.tx_hash, w.required_confirmations, w.attempt_count, w.replacement_count,
+  w.chain, w.network, w.coin, w.from_address, w.to_address, w.amount,
+  w.contract_address, w.amount_unit, w.token_decimals, w.base64_tx, w.fee,
+  w.vin_json, w.vout_json, w.signers_json, w.sign_type
+`, limit, maxReplacements, int64(minAge/time.Millisecond), int64(withdrawJobLease/time.Millisecond))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]ports.WithdrawJob, 0, limit)
+	for rows.Next() {
+		var (
+			job               ports.WithdrawJob
+			tokenDecimals     int64
+			vinJSON, voutJSON string
+			signersJSON       string
+		)
+		if err := rows.Scan(
+			&job.ID,
+			&job.TenantID,
+			&job.AccountID,
+			&job.OrderID,
+			&job.TxHash,
+			&job.RequiredConfs,
+			&job.AttemptCount,
+			&job.ReplaceCount,
+			&job.Tx.Chain,
+			&job.Tx.Network,
+			&job.Tx.Coin,
+			&job.Tx.From,
+			&job.Tx.To,
+			&job.Tx.Amount,
+			&job.Tx.ContractAddress,
+			&job.Tx.AmountUnit,
+			&tokenDecimals,
+			&job.Tx.Base64Tx,
+			&job.Tx.Fee,
+			&vinJSON,
+			&voutJSON,
+			&signersJSON,
+			&job.SignType,
+		); err != nil {
+			return nil, err
+		}
+		job.Tx.TokenDecimals = uint32(tokenDecimals)
+		if err := json.Unmarshal([]byte(vinJSON), &job.Tx.Vin); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(voutJSON), &job.Tx.Vout); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(signersJSON), &job.Signers); err != nil {
+			return nil, err
+		}
+		out = append(out, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (l *PostgresLedger) ReplaceBroadcastedWithdraw(ctx context.Context, tenantID, orderID, oldTxHash, newTxHash, unsignedTx string) error {
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `
+UPDATE ledger_freezes
+SET tx_hash=$1, updated_at=NOW()
+WHERE tenant_id=$2 AND order_id=$3 AND status='BROADCASTED'
+`, newTxHash, tenantID, orderID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE withdraw_jobs
+SET status='BROADCASTED',
+    tx_hash=$1,
+    base64_tx=$2,
+    replacement_count=replacement_count+1,
+    last_error='',
+    processing_started_at=NULL,
+    updated_at=NOW()
+WHERE tenant_id=$3 AND order_id=$4
+`, newTxHash, strings.TrimSpace(unsignedTx), tenantID, orderID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(oldTxHash) != "" {
+		if _, err := tx.ExecContext(ctx, `
+UPDATE withdraw_tx_attempts
+SET status='REPLACED', updated_at=NOW()
+WHERE tenant_id=$1 AND order_id=$2 AND tx_hash=$3 AND status='BROADCASTED'
+`, tenantID, orderID, oldTxHash); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO withdraw_tx_attempts (tenant_id, order_id, tx_hash, unsigned_tx, status)
+VALUES ($1,$2,$3,$4,'BROADCASTED')
+ON CONFLICT (tenant_id, tx_hash)
+DO UPDATE SET unsigned_tx=EXCLUDED.unsigned_tx, status='BROADCASTED', updated_at=NOW()
+`, tenantID, orderID, newTxHash, strings.TrimSpace(unsignedTx)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (l *PostgresLedger) ResetBroadcastedWithdraw(ctx context.Context, tenantID, orderID, reason string) error {
+	_, err := l.db.ExecContext(ctx, `
+UPDATE withdraw_jobs
+SET status='BROADCASTED', last_error=$1, processing_started_at=NULL, updated_at=NOW()
 WHERE tenant_id=$2 AND order_id=$3
 `, reason, tenantID, orderID)
 	return err
@@ -447,6 +656,11 @@ WHERE tenant_id=$3 AND order_id=$4
 		if err != nil {
 			return err
 		}
+		_, _ = tx.ExecContext(ctx, `
+UPDATE withdraw_tx_attempts
+SET status='CONFIRMED', updated_at=NOW()
+WHERE tenant_id=$1 AND order_id=$2 AND tx_hash=$3
+`, tenantID, orderID, txHash)
 		return tx.Commit()
 	}
 	if status != "BROADCASTED" && status != "FROZEN" {
@@ -466,6 +680,11 @@ UPDATE withdraw_jobs
 SET status='BROADCASTED', tx_hash=$1, last_error='', processing_started_at=NULL, updated_at=NOW()
 WHERE tenant_id=$2 AND order_id=$3
 `, txHash, tenantID, orderID)
+		_, _ = tx.ExecContext(ctx, `
+UPDATE withdraw_tx_attempts
+SET status='BROADCASTED', updated_at=NOW()
+WHERE tenant_id=$1 AND order_id=$2 AND tx_hash=$3
+`, tenantID, orderID, txHash)
 		return tx.Commit()
 	}
 
@@ -513,10 +732,15 @@ UPDATE withdraw_jobs
 SET status='DONE', tx_hash=$1, last_error='', processing_started_at=NULL, updated_at=NOW()
 WHERE tenant_id=$2 AND order_id=$3
 `, txHash, tenantID, orderID)
+	_, _ = tx.ExecContext(ctx, `
+UPDATE withdraw_tx_attempts
+SET status='CONFIRMED', updated_at=NOW()
+WHERE tenant_id=$1 AND order_id=$2 AND tx_hash=$3
+`, tenantID, orderID, txHash)
 	return tx.Commit()
 }
 
-func (l *PostgresLedger) FailWithdrawOnChain(ctx context.Context, tenantID, orderID, reason string, confirmations int64) error {
+func (l *PostgresLedger) FailWithdrawOnChain(ctx context.Context, tenantID, orderID, txHash, reason string, confirmations int64) error {
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -527,21 +751,40 @@ func (l *PostgresLedger) FailWithdrawOnChain(ctx context.Context, tenantID, orde
 		asset     string
 		amount    string
 		status    string
+		currentTx string
 	)
 	err = tx.QueryRowContext(ctx, `
-SELECT account_id, asset, amount, status
+SELECT account_id, asset, amount, status, tx_hash
 FROM ledger_freezes
 WHERE tenant_id=$1 AND order_id=$2
 FOR UPDATE
-`, tenantID, orderID).Scan(&accountID, &asset, &amount, &status)
+`, tenantID, orderID).Scan(&accountID, &asset, &amount, &status, &currentTx)
 	if err != nil {
 		return err
 	}
 	if status == "RELEASED" {
+		_, _ = tx.ExecContext(ctx, `
+UPDATE withdraw_tx_attempts
+SET status='FAILED', updated_at=NOW()
+WHERE tenant_id=$1 AND order_id=$2 AND tx_hash=$3
+`, tenantID, orderID, txHash)
 		return tx.Commit()
 	}
 	if status == "CONFIRMED" {
-		return fmt.Errorf("withdraw already confirmed")
+		_, _ = tx.ExecContext(ctx, `
+UPDATE withdraw_tx_attempts
+SET status='FAILED', updated_at=NOW()
+WHERE tenant_id=$1 AND order_id=$2 AND tx_hash=$3
+`, tenantID, orderID, txHash)
+		return tx.Commit()
+	}
+	if strings.TrimSpace(txHash) != "" && strings.TrimSpace(currentTx) != "" && !strings.EqualFold(strings.TrimSpace(currentTx), strings.TrimSpace(txHash)) {
+		_, _ = tx.ExecContext(ctx, `
+UPDATE withdraw_tx_attempts
+SET status='FAILED', updated_at=NOW()
+WHERE tenant_id=$1 AND order_id=$2 AND tx_hash=$3
+`, tenantID, orderID, txHash)
+		return tx.Commit()
 	}
 	current, err := l.getBalanceTx(ctx, tx, tenantID, accountID, asset)
 	if err != nil {
@@ -591,6 +834,11 @@ UPDATE withdraw_jobs
 SET status='FAILED', last_error=$1, processing_started_at=NULL, updated_at=NOW()
 WHERE tenant_id=$2 AND order_id=$3
 `, reason, tenantID, orderID)
+	_, _ = tx.ExecContext(ctx, `
+UPDATE withdraw_tx_attempts
+SET status='FAILED', updated_at=NOW()
+WHERE tenant_id=$1 AND order_id=$2 AND tx_hash=$3
+`, tenantID, orderID, txHash)
 	return tx.Commit()
 }
 
@@ -1191,11 +1439,23 @@ status TEXT NOT NULL DEFAULT 'QUEUED',
 tx_hash TEXT NOT NULL DEFAULT '',
 last_error TEXT NOT NULL DEFAULT '',
 attempt_count INT NOT NULL DEFAULT 0,
+replacement_count INT NOT NULL DEFAULT 0,
 next_retry_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 processing_started_at TIMESTAMPTZ NULL,
 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 UNIQUE (tenant_id, order_id)
+);`,
+		`CREATE TABLE IF NOT EXISTS withdraw_tx_attempts (
+id BIGSERIAL PRIMARY KEY,
+tenant_id TEXT NOT NULL,
+order_id TEXT NOT NULL,
+tx_hash TEXT NOT NULL,
+unsigned_tx TEXT NOT NULL DEFAULT '',
+status TEXT NOT NULL DEFAULT 'BROADCASTED',
+created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+UNIQUE (tenant_id, tx_hash)
 );`,
 		`CREATE TABLE IF NOT EXISTS deposit_events (
 id BIGSERIAL PRIMARY KEY,
@@ -1293,6 +1553,7 @@ UNIQUE (tenant_id, biz_type, biz_id, treasury_account_id, entry_side)
 		`ALTER TABLE withdraw_jobs ADD COLUMN IF NOT EXISTS tx_hash TEXT NOT NULL DEFAULT '';`,
 		`ALTER TABLE withdraw_jobs ADD COLUMN IF NOT EXISTS last_error TEXT NOT NULL DEFAULT '';`,
 		`ALTER TABLE withdraw_jobs ADD COLUMN IF NOT EXISTS attempt_count INT NOT NULL DEFAULT 0;`,
+		`ALTER TABLE withdraw_jobs ADD COLUMN IF NOT EXISTS replacement_count INT NOT NULL DEFAULT 0;`,
 		`ALTER TABLE withdraw_jobs ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ NOT NULL DEFAULT NOW();`,
 		`ALTER TABLE withdraw_jobs ADD COLUMN IF NOT EXISTS processing_started_at TIMESTAMPTZ NULL;`,
 		`ALTER TABLE withdraw_jobs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();`,
@@ -1326,6 +1587,7 @@ UNIQUE (tenant_id, biz_type, biz_id, treasury_account_id, entry_side)
 	_, _ = l.db.ExecContext(ctx, `ALTER TABLE withdraw_jobs ALTER COLUMN network DROP DEFAULT`)
 	_, _ = l.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_withdraw_jobs_status_retry ON withdraw_jobs (status, next_retry_at, created_at, id)`)
 	_, _ = l.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_withdraw_jobs_sender_status ON withdraw_jobs (tenant_id, chain, network, from_address, status, created_at, id)`)
+	_, _ = l.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_withdraw_attempts_order_status ON withdraw_tx_attempts (tenant_id, order_id, status, updated_at, id)`)
 	return nil
 }
 

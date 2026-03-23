@@ -17,6 +17,10 @@ type Config struct {
 	WithdrawDispatchMaxAttempts   int
 	WithdrawDispatchBaseBackoffMs int
 	WithdrawDispatchMaxBackoffMs  int
+	WithdrawAccelerateBatch       int
+	WithdrawAccelerateAfterMs     int
+	WithdrawAccelerateMaxAttempts int
+	WithdrawAccelerateGasBumpBps  int
 }
 
 func Load() Config {
@@ -83,6 +87,30 @@ func Load() Config {
 			withdrawDispatchMaxBackoffMs = parsed
 		}
 	}
+	withdrawAccelerateBatch := 8
+	if v := os.Getenv("WALLET_WITHDRAW_ACCELERATE_BATCH"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			withdrawAccelerateBatch = parsed
+		}
+	}
+	withdrawAccelerateAfterMs := 60000
+	if v := os.Getenv("WALLET_WITHDRAW_ACCELERATE_AFTER_MS"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			withdrawAccelerateAfterMs = parsed
+		}
+	}
+	withdrawAccelerateMaxAttempts := 3
+	if v := os.Getenv("WALLET_WITHDRAW_ACCELERATE_MAX_ATTEMPTS"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			withdrawAccelerateMaxAttempts = parsed
+		}
+	}
+	withdrawAccelerateGasBumpBps := 2000
+	if v := os.Getenv("WALLET_WITHDRAW_ACCELERATE_GAS_BUMP_BPS"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			withdrawAccelerateGasBumpBps = parsed
+		}
+	}
 
 	return Config{
 		HTTPAddr:                      host + ":" + strconv.Itoa(port),
@@ -96,5 +124,9 @@ func Load() Config {
 		WithdrawDispatchMaxAttempts:   withdrawDispatchMaxAttempts,
 		WithdrawDispatchBaseBackoffMs: withdrawDispatchBaseBackoffMs,
 		WithdrawDispatchMaxBackoffMs:  withdrawDispatchMaxBackoffMs,
+		WithdrawAccelerateBatch:       withdrawAccelerateBatch,
+		WithdrawAccelerateAfterMs:     withdrawAccelerateAfterMs,
+		WithdrawAccelerateMaxAttempts: withdrawAccelerateMaxAttempts,
+		WithdrawAccelerateGasBumpBps:  withdrawAccelerateGasBumpBps,
 	}
 }

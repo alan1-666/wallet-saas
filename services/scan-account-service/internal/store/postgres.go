@@ -35,6 +35,7 @@ type PendingWithdraw struct {
 	Chain         string
 	Network       string
 	TxHash        string
+	AttemptStatus string
 	Confirmations int64
 	RequiredConfs int64
 	BroadcastedAt time.Time
@@ -617,11 +618,15 @@ func outboxRetryBackoff(eventType string, attempt int) time.Duration {
 
 func (p *Postgres) ListPendingWithdraws(ctx context.Context, limit int) ([]PendingWithdraw, error) {
 	rows, err := p.db.QueryContext(ctx, `
-SELECT tenant_id, order_id, chain, network, tx_hash, confirmations, required_confirmations, updated_at
-FROM ledger_freezes
-WHERE status='BROADCASTED'
-  AND tx_hash <> ''
-ORDER BY updated_at ASC
+SELECT wta.tenant_id, wta.order_id, lf.chain, lf.network, wta.tx_hash, wta.status, lf.confirmations, lf.required_confirmations, wta.updated_at
+FROM withdraw_tx_attempts wta
+JOIN ledger_freezes lf
+  ON lf.tenant_id = wta.tenant_id
+ AND lf.order_id = wta.order_id
+WHERE lf.status='BROADCASTED'
+  AND wta.tx_hash <> ''
+  AND wta.status IN ('BROADCASTED', 'REPLACED')
+ORDER BY wta.updated_at ASC, wta.id ASC
 LIMIT $1
 `, limit)
 	if err != nil {
@@ -631,7 +636,7 @@ LIMIT $1
 	out := make([]PendingWithdraw, 0, limit)
 	for rows.Next() {
 		var it PendingWithdraw
-		if err := rows.Scan(&it.TenantID, &it.OrderID, &it.Chain, &it.Network, &it.TxHash, &it.Confirmations, &it.RequiredConfs, &it.BroadcastedAt); err != nil {
+		if err := rows.Scan(&it.TenantID, &it.OrderID, &it.Chain, &it.Network, &it.TxHash, &it.AttemptStatus, &it.Confirmations, &it.RequiredConfs, &it.BroadcastedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, it)
@@ -668,7 +673,7 @@ func (p *Postgres) IncrementOutgoingNotFound(ctx context.Context, kind, tenantID
 	err := p.db.QueryRowContext(ctx, `
 INSERT INTO scan_outgoing_watch (kind, tenant_id, order_id, chain, network, tx_hash, not_found_count, first_not_found_at, last_not_found_at, updated_at)
 VALUES ($1,$2,$3,$4,$5,$6,1,NOW(),NOW(),NOW())
-ON CONFLICT (kind, tenant_id, order_id)
+ON CONFLICT (kind, tenant_id, order_id, tx_hash)
 DO UPDATE SET
   chain = EXCLUDED.chain,
   network = EXCLUDED.network,
@@ -684,11 +689,11 @@ RETURNING not_found_count, first_not_found_at
 	return out, nil
 }
 
-func (p *Postgres) ClearOutgoingNotFound(ctx context.Context, kind, tenantID, orderID string) error {
+func (p *Postgres) ClearOutgoingNotFound(ctx context.Context, kind, tenantID, orderID, txHash string) error {
 	_, err := p.db.ExecContext(ctx, `
 DELETE FROM scan_outgoing_watch
-WHERE kind=$1 AND tenant_id=$2 AND order_id=$3
-`, strings.ToLower(strings.TrimSpace(kind)), tenantID, orderID)
+WHERE kind=$1 AND tenant_id=$2 AND order_id=$3 AND tx_hash=$4
+`, strings.ToLower(strings.TrimSpace(kind)), tenantID, orderID, strings.TrimSpace(txHash))
 	return err
 }
 
@@ -785,7 +790,18 @@ func (p *Postgres) initSchema(ctx context.Context) error {
   last_not_found_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (kind, tenant_id, order_id)
+  PRIMARY KEY (kind, tenant_id, order_id, tx_hash)
+)`,
+		`CREATE TABLE IF NOT EXISTS withdraw_tx_attempts (
+  id BIGSERIAL PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  order_id TEXT NOT NULL,
+  tx_hash TEXT NOT NULL,
+  unsigned_tx TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'BROADCASTED',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (tenant_id, tx_hash)
 )`,
 	}
 
@@ -813,6 +829,8 @@ func (p *Postgres) initSchema(ctx context.Context) error {
 			return fmt.Errorf("alter schema failed: %w", err)
 		}
 	}
+	_, _ = p.db.ExecContext(ctx, `ALTER TABLE scan_outgoing_watch DROP CONSTRAINT IF EXISTS scan_outgoing_watch_pkey`)
+	_, _ = p.db.ExecContext(ctx, `ALTER TABLE scan_outgoing_watch ADD PRIMARY KEY (kind, tenant_id, order_id, tx_hash)`)
 	_, _ = p.db.ExecContext(ctx, `
 UPDATE scan_watch_addresses
 SET model='account'

@@ -174,7 +174,7 @@ func (h *WithdrawHandler) WithdrawOnchainNotify(w http.ResponseWriter, r *http.R
 		if reason == "" {
 			reason = "onchain failed"
 		}
-		err = h.Ledger.FailWithdrawOnChain(r.Context(), req.TenantID, req.OrderID, reason, req.Confirmations)
+		err = h.Ledger.FailWithdrawOnChain(r.Context(), req.TenantID, req.OrderID, req.TxHash, reason, req.Confirmations)
 	default:
 		http.Error(w, "invalid status", http.StatusBadRequest)
 		return

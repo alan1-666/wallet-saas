@@ -131,6 +131,9 @@ func TestBuildBase64TxUsesStructuredEVMPayloadForSupportedChains(t *testing.T) {
 			if payload.ChainID != tc.chainID {
 				t.Fatalf("unexpected chainId: got=%s want=%s payload=%+v", payload.ChainID, tc.chainID, payload)
 			}
+			if payload.NonceMode != "pending" {
+				t.Fatalf("expected pending nonce mode, got payload=%+v", payload)
+			}
 			if payload.FromAddress != "0x1111111111111111111111111111111111111111" ||
 				payload.ToAddress != "0x2222222222222222222222222222222222222222" ||
 				payload.Amount != "12345" {

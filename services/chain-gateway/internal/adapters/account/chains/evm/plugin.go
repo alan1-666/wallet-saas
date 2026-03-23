@@ -78,13 +78,15 @@ func (p *Plugin) BuildUnsignedAccount(ctx context.Context, chain, network, base6
 	if err != nil {
 		return ports.BuildUnsignedResult{}, err
 	}
-	if strings.TrimSpace(req.FromAddress) != "" {
+	if strings.TrimSpace(req.FromAddress) != "" && !usesFixedNonce(req.NonceMode) {
 		nonce, err := p.fetchPendingNonce(ctx, chain, network, req.FromAddress)
 		if err != nil {
 			return ports.BuildUnsignedResult{}, fmt.Errorf("resolve nonce failed: %w", err)
 		}
 		dynamicTx.Nonce = nonce
-		if refreshed, err := encodeDynamicFeeTx(req, nonce); err == nil {
+		req.Nonce = nonce
+		req.NonceMode = "fixed"
+		if refreshed, err := encodeDynamicFeeTx(req); err == nil {
 			payload = refreshed
 		}
 	}
@@ -321,6 +323,7 @@ func matchesSignerPublicKey(tx *types.Transaction, signer types.Signer, sig []by
 
 type evmDynamicFeeRequest struct {
 	ChainID              string `json:"chainId"`
+	NonceMode            string `json:"nonceMode,omitempty"`
 	FromAddress          string `json:"fromAddress,omitempty"`
 	Nonce                uint64 `json:"nonce"`
 	MaxPriorityFeePerGas string `json:"maxPriorityFeePerGas"`
@@ -378,13 +381,16 @@ func decodeDynamicFeeTx(raw []byte) (*types.DynamicFeeTx, evmDynamicFeeRequest, 
 	}, req, nil
 }
 
-func encodeDynamicFeeTx(req evmDynamicFeeRequest, nonce uint64) (string, error) {
-	req.Nonce = nonce
+func encodeDynamicFeeTx(req evmDynamicFeeRequest) (string, error) {
 	raw, err := json.Marshal(req)
 	if err != nil {
 		return "", err
 	}
 	return base64.StdEncoding.EncodeToString(raw), nil
+}
+
+func usesFixedNonce(mode string) bool {
+	return strings.EqualFold(strings.TrimSpace(mode), "fixed")
 }
 
 func (p *Plugin) fetchPendingNonce(ctx context.Context, chain, network, fromAddress string) (uint64, error) {

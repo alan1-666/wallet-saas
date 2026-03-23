@@ -73,14 +73,18 @@ func Run() error {
 		Registry:     registryAdapter,
 	}
 	go (&dispatcher.WithdrawDispatcher{
-		Ledger:      ledgerAdapter,
-		Orch:        orch,
-		Interval:    time.Duration(cfg.WithdrawDispatchIntervalMs) * time.Millisecond,
-		Batch:       cfg.WithdrawDispatchBatch,
-		Parallelism: cfg.WithdrawDispatchParallelism,
-		MaxAttempts: cfg.WithdrawDispatchMaxAttempts,
-		BaseBackoff: time.Duration(cfg.WithdrawDispatchBaseBackoffMs) * time.Millisecond,
-		MaxBackoff:  time.Duration(cfg.WithdrawDispatchMaxBackoffMs) * time.Millisecond,
+		Ledger:                ledgerAdapter,
+		Orch:                  orch,
+		Interval:              time.Duration(cfg.WithdrawDispatchIntervalMs) * time.Millisecond,
+		Batch:                 cfg.WithdrawDispatchBatch,
+		AccelerateBatch:       cfg.WithdrawAccelerateBatch,
+		Parallelism:           cfg.WithdrawDispatchParallelism,
+		MaxAttempts:           cfg.WithdrawDispatchMaxAttempts,
+		BaseBackoff:           time.Duration(cfg.WithdrawDispatchBaseBackoffMs) * time.Millisecond,
+		MaxBackoff:            time.Duration(cfg.WithdrawDispatchMaxBackoffMs) * time.Millisecond,
+		AccelerateAfter:       time.Duration(cfg.WithdrawAccelerateAfterMs) * time.Millisecond,
+		AccelerateMaxAttempts: cfg.WithdrawAccelerateMaxAttempts,
+		AccelerateGasBumpBps:  cfg.WithdrawAccelerateGasBumpBps,
 	}).Run(context.Background())
 	return http.ListenAndServe(cfg.HTTPAddr, httptransport.NewMux(withdrawHandler))
 }

@@ -17,3 +17,8 @@ type WithdrawRequest struct {
 	SignType      string
 	Tx            ports.BuildUnsignedParams
 }
+
+type BroadcastResult struct {
+	TxHash     string
+	UnsignedTx string
+}

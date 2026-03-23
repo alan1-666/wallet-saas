@@ -25,7 +25,7 @@ func (m *MockLedger) ClaimQueuedWithdraws(_ context.Context, _ int) ([]ports.Wit
 	return nil, nil
 }
 
-func (m *MockLedger) MarkQueuedWithdrawDone(_ context.Context, _, _, _ string) error {
+func (m *MockLedger) MarkQueuedWithdrawDone(_ context.Context, _, _, _, _ string) error {
 	return nil
 }
 
@@ -37,6 +37,18 @@ func (m *MockLedger) MarkQueuedWithdrawFailed(_ context.Context, _, _, _ string)
 	return nil
 }
 
+func (m *MockLedger) ClaimStaleBroadcastedWithdraws(_ context.Context, _ int, _ time.Duration, _ int) ([]ports.WithdrawJob, error) {
+	return nil, nil
+}
+
+func (m *MockLedger) ReplaceBroadcastedWithdraw(_ context.Context, _, _, _, _, _ string) error {
+	return nil
+}
+
+func (m *MockLedger) ResetBroadcastedWithdraw(_ context.Context, _, _, _ string) error {
+	return nil
+}
+
 func (m *MockLedger) ConfirmWithdraw(_ context.Context, _, _, _, _ string) error {
 	return nil
 }
@@ -45,7 +57,7 @@ func (m *MockLedger) ConfirmWithdrawOnChain(_ context.Context, _, _, _ string, _
 	return nil
 }
 
-func (m *MockLedger) FailWithdrawOnChain(_ context.Context, _, _, _ string, _ int64) error {
+func (m *MockLedger) FailWithdrawOnChain(_ context.Context, _, _, _, _ string, _ int64) error {
 	return nil
 }
 

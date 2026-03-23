@@ -11,14 +11,18 @@ import (
 )
 
 type WithdrawDispatcher struct {
-	Ledger      ports.LedgerPort
-	Orch        *orchestrator.WithdrawOrchestrator
-	Interval    time.Duration
-	Batch       int
-	Parallelism int
-	MaxAttempts int
-	BaseBackoff time.Duration
-	MaxBackoff  time.Duration
+	Ledger                ports.LedgerPort
+	Orch                  *orchestrator.WithdrawOrchestrator
+	Interval              time.Duration
+	Batch                 int
+	AccelerateBatch       int
+	Parallelism           int
+	MaxAttempts           int
+	BaseBackoff           time.Duration
+	MaxBackoff            time.Duration
+	AccelerateAfter       time.Duration
+	AccelerateMaxAttempts int
+	AccelerateGasBumpBps  int
 }
 
 func (d *WithdrawDispatcher) Run(ctx context.Context) {
@@ -30,12 +34,14 @@ func (d *WithdrawDispatcher) Run(ctx context.Context) {
 	defer ticker.Stop()
 
 	d.dispatchOnce(ctx)
+	d.accelerateOnce(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			d.dispatchOnce(ctx)
+			d.accelerateOnce(ctx)
 		}
 	}
 }
@@ -127,7 +133,7 @@ func (d *WithdrawDispatcher) handleJob(ctx context.Context, job ports.WithdrawJo
 		SignType:      job.SignType,
 		Tx:            job.Tx,
 	}
-	txHash, err := d.Orch.ExecuteQueued(ctx, req)
+	broadcast, err := d.Orch.ExecuteQueuedWithUnsigned(ctx, req)
 	if err != nil {
 		reason := err.Error()
 		if d.shouldRetry(job.AttemptCount) {
@@ -147,9 +153,9 @@ func (d *WithdrawDispatcher) handleJob(ctx context.Context, job ports.WithdrawJo
 		log.Printf("withdraw dispatcher execute failed tenant=%s order=%s err=%v", job.TenantID, job.OrderID, err)
 		return
 	}
-	if err := d.Ledger.MarkQueuedWithdrawDone(ctx, job.TenantID, job.OrderID, txHash); err != nil {
-		log.Printf("withdraw dispatcher mark done failed tenant=%s order=%s tx=%s err=%v", job.TenantID, job.OrderID, txHash, err)
+	if err := d.Ledger.MarkQueuedWithdrawDone(ctx, job.TenantID, job.OrderID, broadcast.TxHash, broadcast.UnsignedTx); err != nil {
+		log.Printf("withdraw dispatcher mark done failed tenant=%s order=%s tx=%s err=%v", job.TenantID, job.OrderID, broadcast.TxHash, err)
 		return
 	}
-	log.Printf("withdraw dispatcher broadcasted tenant=%s order=%s tx=%s", job.TenantID, job.OrderID, txHash)
+	log.Printf("withdraw dispatcher broadcasted tenant=%s order=%s tx=%s", job.TenantID, job.OrderID, broadcast.TxHash)
 }

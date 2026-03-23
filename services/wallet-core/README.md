@@ -127,6 +127,8 @@ State orchestration and domain logic.
 - stale `PROCESSING` jobs are re-claimed after lease timeout; retries use exponential backoff until `WALLET_WITHDRAW_DISPATCH_MAX_ATTEMPTS`
 - same `from_address` is serialized only while a job is actively `PROCESSING`; once a tx is `BROADCASTED`, the next queued job for that address can be picked and will rely on the chain gateway's pending nonce resolution
 - dispatcher can process different source addresses in parallel via `WALLET_WITHDRAW_DISPATCH_PARALLELISM`
+- EVM `BROADCASTED` withdraws with `0` confirmations can be auto-accelerated: the latest fixed-nonce unsigned payload is persisted, gas is bumped, and a replacement tx is broadcast with the same nonce
+- replacement tx hashes are tracked in `withdraw_tx_attempts`; scan-service watches both current and replaced hashes so an older hash confirming first will still settle the withdraw correctly
 - broadcast success: `ConfirmWithdraw`
 - broadcast failure (or sign/build failure): `ReleaseWithdraw`
 - withdraw status query now includes queue-side `queue_status`, `attempt_count`, `last_error` for debugging queued dispatch failures
@@ -138,6 +140,7 @@ State orchestration and domain logic.
 - `api_tokens`, `tenant_keys`, `audit_logs`
 - `idem_requests`
 - `deposit_events`, `sweep_orders`, `withdraw_jobs`
+- `withdraw_tx_attempts`
 - `ledger_audit_events`
 - `ledger_balances`, `ledger_journals`
 - `wallet_accounts`, `wallet_addresses`
@@ -156,3 +159,7 @@ State orchestration and domain logic.
 - `WALLET_WITHDRAW_DISPATCH_MAX_ATTEMPTS` max automatic withdraw dispatch attempts before release/fail (default `5`)
 - `WALLET_WITHDRAW_DISPATCH_BASE_BACKOFF_MS` first retry delay for dispatcher failures (default `1000`)
 - `WALLET_WITHDRAW_DISPATCH_MAX_BACKOFF_MS` max retry delay cap for dispatcher failures (default `30000`)
+- `WALLET_WITHDRAW_ACCELERATE_BATCH` max number of stale `BROADCASTED` EVM withdraws to examine per loop (default `8`)
+- `WALLET_WITHDRAW_ACCELERATE_AFTER_MS` age threshold before a zero-confirmation EVM withdraw is considered stuck and eligible for replacement (default `60000`)
+- `WALLET_WITHDRAW_ACCELERATE_MAX_ATTEMPTS` max automatic replacement broadcasts per withdraw order (default `3`)
+- `WALLET_WITHDRAW_ACCELERATE_GAS_BUMP_BPS` gas bump used for replacement txs, in basis points (default `2000`, i.e. `20%`)

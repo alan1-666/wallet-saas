@@ -9,12 +9,15 @@ type LedgerPort interface {
 	FreezeWithdraw(ctx context.Context, tenantID, accountID, orderID, chain, network, asset, amount string, requiredConfs int64) error
 	QueueWithdraw(ctx context.Context, in WithdrawQueueInput) error
 	ClaimQueuedWithdraws(ctx context.Context, limit int) ([]WithdrawJob, error)
-	MarkQueuedWithdrawDone(ctx context.Context, tenantID, orderID, txHash string) error
+	MarkQueuedWithdrawDone(ctx context.Context, tenantID, orderID, txHash, unsignedTx string) error
 	RescheduleQueuedWithdraw(ctx context.Context, tenantID, orderID, reason string, delay time.Duration) error
 	MarkQueuedWithdrawFailed(ctx context.Context, tenantID, orderID, reason string) error
+	ClaimStaleBroadcastedWithdraws(ctx context.Context, limit int, minAge time.Duration, maxReplacements int) ([]WithdrawJob, error)
+	ReplaceBroadcastedWithdraw(ctx context.Context, tenantID, orderID, oldTxHash, newTxHash, unsignedTx string) error
+	ResetBroadcastedWithdraw(ctx context.Context, tenantID, orderID, reason string) error
 	ConfirmWithdraw(ctx context.Context, tenantID, accountID, orderID, txHash string) error
 	ConfirmWithdrawOnChain(ctx context.Context, tenantID, orderID, txHash string, confirmations, requiredConfs int64) error
-	FailWithdrawOnChain(ctx context.Context, tenantID, orderID, reason string, confirmations int64) error
+	FailWithdrawOnChain(ctx context.Context, tenantID, orderID, txHash, reason string, confirmations int64) error
 	ReleaseWithdraw(ctx context.Context, tenantID, accountID, orderID, reason string) error
 	GetWithdrawStatus(ctx context.Context, tenantID, orderID string) (LedgerStatus, error)
 	CreditDeposit(ctx context.Context, in DepositCreditInput) error
@@ -79,8 +82,10 @@ type WithdrawJob struct {
 	TenantID      string
 	AccountID     string
 	OrderID       string
+	TxHash        string
 	RequiredConfs int64
 	AttemptCount  int
+	ReplaceCount  int
 	Signers       []SignerRef
 	SignType      string
 	Tx            BuildUnsignedParams
