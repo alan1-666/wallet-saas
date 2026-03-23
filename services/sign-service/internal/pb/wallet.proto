@@ -1,51 +1,53 @@
 syntax = "proto3";
 
-option go_package = "./protobuf/wallet";
+option go_package = "./pb;wallet";
 package dapplink.wallet;
 
 message PublicKey {
-    string compress_pubkey = 1;
-    string decompress_pubkey = 2;
+  string compressed_hex = 1;
+  string uncompressed_hex = 2;
 }
 
-message SupportSignWayRequest{
-  string consumer_token = 1;
-  string type = 2;
+message GetSupportSignWayRequest {
+  string sign_type = 1;
 }
 
-message SupportSignWayResponse {
-  string code = 1;
-  string msg = 2;
-  bool support = 3;
+message GetSupportSignWayResponse {
+  bool support = 1;
+  string message = 2;
 }
 
-message ExportPublicKeyRequest {
-  string consumer_token = 1;
-  string type = 2;
-  uint64 number = 3;
+message DeriveKeyRequest {
+  string key_id = 1;
+  string sign_type = 2;
 }
 
-message ExportPublicKeyResponse {
-  string code = 1;
-  string msg = 2;
-  repeated PublicKey public_key = 3;
+message DeriveKeyResponse {
+  string key_id = 1;
+  string sign_type = 2;
+  string derivation_path = 3;
+  PublicKey public_key = 4;
+  bool public_derivation_supported = 5;
+  PublicKey account_public_key = 6;
+  string account_chain_code = 7;
+  string account_derivation_path = 8;
+  string custody_scheme = 9;
 }
 
-message SignTxMessageRequest {
-  string consumer_token = 1;
-  string type = 2;
-  string public_key = 3;
-  string message_hash = 4;
+message SignMessageRequest {
+  string key_id = 1;
+  string sign_type = 2;
+  string message_hash = 3;
 }
 
-message SignTxMessageResponse {
-  string code = 1;
-  string msg = 2;
-  string signature = 3;
+message SignMessageResponse {
+  string signature = 1;
+  string message = 2;
+  string custody_scheme = 3;
 }
 
 service WalletService {
-  rpc getSupportSignWay(SupportSignWayRequest) returns (SupportSignWayResponse) {}
-  rpc exportPublicKeyList(ExportPublicKeyRequest) returns (ExportPublicKeyResponse) {}
-  rpc signTxMessage(SignTxMessageRequest) returns (SignTxMessageResponse) {}
+  rpc GetSupportSignWay(GetSupportSignWayRequest) returns (GetSupportSignWayResponse) {}
+  rpc DeriveKey(DeriveKeyRequest) returns (DeriveKeyResponse) {}
+  rpc SignMessage(SignMessageRequest) returns (SignMessageResponse) {}
 }

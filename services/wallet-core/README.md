@@ -40,6 +40,9 @@ State orchestration and domain logic.
 ```
 - `key_id` / `key_ids` are HD derivation key IDs, not raw public keys.
 - `wallet-core` resolves the matching public key from registry before broadcast.
+- for ECDSA chains, address creation now prefers account-level public derivation material from `sign-service` and derives child public keys locally instead of asking the signer to derive a child private key just to export its public key.
+- for EdDSA chains, address creation still uses direct child public-key derivation from `sign-service` because the current hardened derivation path does not support public-only child derivation.
+- when a brand-new address is derived, the response also includes `custody_scheme` from `sign-service`, so callers can see which signer custody backend is serving the request.
 
 ### Solana token withdraw request example
 ```json
@@ -135,5 +138,6 @@ State orchestration and domain logic.
 - `WALLET_CORE_HOST` (default `0.0.0.0`)
 - `WALLET_CORE_PORT` (default `8081`)
 - `SIGN_SERVICE_ADDR` (default `127.0.0.1:9091`)
+- `SIGN_SERVICE_TOKEN` shared internal auth token for `sign-service` (default `dev-sign-token`)
 - `CHAIN_GATEWAY_GRPC_ADDR` (default `127.0.0.1:9082`, internal call path)
 - `WALLET_DB_DSN` (optional, enables postgres-backed ledger/auth/registry adapters)

@@ -8,6 +8,7 @@ import (
 type Config struct {
 	HTTPAddr         string
 	SignServiceAddr  string
+	SignServiceToken string
 	ChainGatewayGRPC string
 	PostgresDSN      string
 }
@@ -29,6 +30,11 @@ func Load() Config {
 		signAddr = "127.0.0.1:9091"
 	}
 
+	signToken := os.Getenv("SIGN_SERVICE_TOKEN")
+	if signToken == "" {
+		signToken = "dev-sign-token"
+	}
+
 	chainGatewayGRPC := os.Getenv("CHAIN_GATEWAY_GRPC_ADDR")
 	if chainGatewayGRPC == "" {
 		chainGatewayGRPC = "127.0.0.1:9082"
@@ -39,6 +45,7 @@ func Load() Config {
 	return Config{
 		HTTPAddr:         host + ":" + strconv.Itoa(port),
 		SignServiceAddr:  signAddr,
+		SignServiceToken: signToken,
 		ChainGatewayGRPC: chainGatewayGRPC,
 		PostgresDSN:      postgresDSN,
 	}

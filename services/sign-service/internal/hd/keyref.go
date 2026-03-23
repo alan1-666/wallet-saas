@@ -76,6 +76,19 @@ func (r KeyRef) DerivationPath() (string, error) {
 	}
 }
 
+func (r KeyRef) AccountDerivationPath() (string, error) {
+	coinType, err := coinTypeForChain(r.Chain)
+	if err != nil {
+		return "", err
+	}
+	switch r.SignType {
+	case "ecdsa", "eddsa":
+		return fmt.Sprintf("m/44'/%d'/%d'", coinType, r.Account), nil
+	default:
+		return "", fmt.Errorf("unsupported sign type: %s", r.SignType)
+	}
+}
+
 func (r KeyRef) pathIndexes() ([]uint32, error) {
 	coinType, err := coinTypeForChain(r.Chain)
 	if err != nil {
@@ -101,6 +114,18 @@ func (r KeyRef) pathIndexes() ([]uint32, error) {
 	default:
 		return nil, fmt.Errorf("unsupported sign type: %s", r.SignType)
 	}
+}
+
+func (r KeyRef) accountPathIndexes() ([]uint32, error) {
+	coinType, err := coinTypeForChain(r.Chain)
+	if err != nil {
+		return nil, err
+	}
+	return []uint32{
+		44 + hardenedOffset,
+		coinType + hardenedOffset,
+		r.Account + hardenedOffset,
+	}, nil
 }
 
 func parseUint32(raw string) (uint32, error) {

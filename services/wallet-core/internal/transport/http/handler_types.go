@@ -150,6 +150,7 @@ type CreateAddressResponse struct {
 	DerivationPath string `json:"derivation_path"`
 	ChangeIndex    int64  `json:"change_index"`
 	AddressIndex   int64  `json:"address_index"`
+	CustodyScheme  string `json:"custody_scheme,omitempty"`
 }
 
 type AccountUpsertRequest struct {

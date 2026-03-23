@@ -1,10 +1,6 @@
 package keystore
 
-import (
-	"encoding/hex"
-
-	"github.com/syndtr/goleveldb/leveldb"
-)
+import "github.com/syndtr/goleveldb/leveldb"
 
 type levelStore struct {
 	db *leveldb.DB
@@ -28,13 +24,4 @@ func (db *levelStore) Get(key []byte) ([]byte, error) {
 
 func (db *levelStore) Close() error {
 	return db.db.Close()
-}
-
-func toBytes(dataStr string) []byte {
-	dataBytes, _ := hex.DecodeString(dataStr)
-	return dataBytes
-}
-
-func toString(byteArr []byte) string {
-	return hex.EncodeToString(byteArr)
 }

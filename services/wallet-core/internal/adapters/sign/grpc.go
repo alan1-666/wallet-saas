@@ -3,25 +3,32 @@ package sign
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 
 	pb "wallet-saas-v2/services/wallet-core/internal/pb"
 	"wallet-saas-v2/services/wallet-core/internal/ports"
 )
 
 type GRPCSign struct {
-	client pb.WalletServiceClient
-	conn   *grpc.ClientConn
+	client    pb.WalletServiceClient
+	conn      *grpc.ClientConn
+	authToken string
 }
 
-func NewGRPC(addr string) (*GRPCSign, error) {
+func NewGRPC(addr, authToken string) (*GRPCSign, error) {
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, err
 	}
-	return &GRPCSign{client: pb.NewWalletServiceClient(conn), conn: conn}, nil
+	return &GRPCSign{
+		client:    pb.NewWalletServiceClient(conn),
+		conn:      conn,
+		authToken: strings.TrimSpace(authToken),
+	}, nil
 }
 
 func (s *GRPCSign) Close() error {
@@ -32,46 +39,52 @@ func (s *GRPCSign) Close() error {
 }
 
 func (s *GRPCSign) SignMessage(ctx context.Context, signType, keyID, messageHash string) (string, error) {
-	if signType == "" {
-		signType = "eddsa"
-	}
-	resp, err := s.client.SignTxMessage(ctx, &pb.SignTxMessageRequest{
-		ConsumerToken: keyID,
-		Type:          signType,
-		PublicKey:     keyID,
-		MessageHash:   messageHash,
+	resp, err := s.client.SignMessage(s.attachAuth(ctx), &pb.SignMessageRequest{
+		KeyId:       keyID,
+		SignType:    signType,
+		MessageHash: messageHash,
 	})
 	if err != nil {
 		return "", err
 	}
-	if resp.GetCode() != "1" {
-		return "", fmt.Errorf("sign service error: %s", resp.GetMsg())
+	if strings.TrimSpace(resp.GetSignature()) == "" {
+		return "", fmt.Errorf("empty signature")
 	}
 	return resp.GetSignature(), nil
 }
 
 func (s *GRPCSign) DeriveKey(ctx context.Context, signType, keyID string) (ports.DerivedKey, error) {
-	if signType == "" {
-		signType = "ecdsa"
-	}
-	resp, err := s.client.ExportPublicKeyList(ctx, &pb.ExportPublicKeyRequest{
-		ConsumerToken: keyID,
-		Type:          signType,
-		Number:        1,
+	resp, err := s.client.DeriveKey(s.attachAuth(ctx), &pb.DeriveKeyRequest{
+		KeyId:    keyID,
+		SignType: signType,
 	})
 	if err != nil {
 		return ports.DerivedKey{}, err
 	}
-	if resp.GetCode() != "1" {
-		return ports.DerivedKey{}, fmt.Errorf("sign service error: %s", resp.GetMsg())
-	}
-	if len(resp.GetPublicKey()) == 0 {
+	if resp.GetPublicKey() == nil || strings.TrimSpace(resp.GetPublicKey().GetCompressedHex()) == "" {
 		return ports.DerivedKey{}, fmt.Errorf("empty derived key response")
 	}
-	item := resp.GetPublicKey()[0]
-	return ports.DerivedKey{
-		KeyID:              keyID,
-		PublicKey:          item.GetCompressPubkey(),
-		AlternatePublicKey: item.GetDecompressPubkey(),
-	}, nil
+
+	out := ports.DerivedKey{
+		KeyID:                     keyID,
+		PublicKey:                 resp.GetPublicKey().GetCompressedHex(),
+		AlternatePublicKey:        resp.GetPublicKey().GetUncompressedHex(),
+		DerivationPath:            resp.GetDerivationPath(),
+		PublicDerivationSupported: resp.GetPublicDerivationSupported(),
+		AccountChainCode:          resp.GetAccountChainCode(),
+		AccountDerivationPath:     resp.GetAccountDerivationPath(),
+		CustodyScheme:             resp.GetCustodyScheme(),
+	}
+	if resp.GetAccountPublicKey() != nil {
+		out.AccountPublicKey = resp.GetAccountPublicKey().GetCompressedHex()
+		out.AccountAlternatePublicKey = resp.GetAccountPublicKey().GetUncompressedHex()
+	}
+	return out, nil
+}
+
+func (s *GRPCSign) attachAuth(ctx context.Context) context.Context {
+	if strings.TrimSpace(s.authToken) == "" {
+		return ctx
+	}
+	return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+s.authToken)
 }

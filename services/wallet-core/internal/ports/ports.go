@@ -22,10 +22,16 @@ type SignPort interface {
 }
 
 type DerivedKey struct {
-	KeyID              string
-	PublicKey          string
-	AlternatePublicKey string
-	DerivationPath     string
+	KeyID                     string
+	PublicKey                 string
+	AlternatePublicKey        string
+	DerivationPath            string
+	PublicDerivationSupported bool
+	AccountPublicKey          string
+	AccountAlternatePublicKey string
+	AccountChainCode          string
+	AccountDerivationPath     string
+	CustodyScheme             string
 }
 
 type KeyManagePort interface {

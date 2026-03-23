@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"wallet-saas-v2/services/wallet-core/internal/hdpub"
 	"wallet-saas-v2/services/wallet-core/internal/ports"
 )
 
@@ -94,21 +95,36 @@ func (h *WithdrawHandler) CreateAddress(w http.ResponseWriter, r *http.Request) 
 
 	address := prepared.Address
 	pubKey := prepared.PublicKey
+	var custodyScheme string
 	if !prepared.Existing {
 		derived, err := h.KeyManager.DeriveKey(r.Context(), req.SignType, prepared.KeyID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
+		if derived.PublicDerivationSupported && strings.EqualFold(req.SignType, "ecdsa") {
+			compressed, uncompressed, err := hdpub.DeriveECDSAChildPublic(derived.AccountPublicKey, derived.AccountChainCode, prepared.ChangeIndex, prepared.AddressIndex)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			derived.PublicKey = compressed
+			derived.AlternatePublicKey = uncompressed
+		}
 		if strings.TrimSpace(derived.PublicKey) == "" {
 			http.Error(w, "empty public key", http.StatusBadGateway)
 			return
 		}
+		custodyScheme = derived.CustodyScheme
 		pubKey = derived.PublicKey
 		address, err = h.ChainAddr.ConvertAddress(r.Context(), req.Chain, req.Network, req.AddressType, pubKey)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
+		}
+	} else if h.KeyManager != nil {
+		if derived, err := h.KeyManager.DeriveKey(r.Context(), req.SignType, prepared.KeyID); err == nil {
+			custodyScheme = derived.CustodyScheme
 		}
 	}
 	if err := h.Auth.BindTenantKey(r.Context(), req.TenantID, prepared.KeyID); err != nil {
@@ -155,6 +171,7 @@ func (h *WithdrawHandler) CreateAddress(w http.ResponseWriter, r *http.Request) 
 		DerivationPath: prepared.DerivationPath,
 		ChangeIndex:    prepared.ChangeIndex,
 		AddressIndex:   prepared.AddressIndex,
+		CustodyScheme:  custodyScheme,
 	})
 }
 

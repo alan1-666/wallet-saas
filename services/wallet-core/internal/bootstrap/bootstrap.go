@@ -17,7 +17,7 @@ import (
 func Run() error {
 	cfg := config.Load()
 
-	signClient, err := signadapter.NewGRPC(cfg.SignServiceAddr)
+	signClient, err := signadapter.NewGRPC(cfg.SignServiceAddr, cfg.SignServiceToken)
 	if err != nil {
 		return err
 	}

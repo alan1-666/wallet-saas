@@ -3,20 +3,28 @@ package keystore
 import (
 	"crypto/rand"
 	"fmt"
+	"strings"
+	"sync"
 )
 
 type Keys struct {
-	store *levelStore
+	store     *levelStore
+	namespace string
+	mu        sync.Mutex
 }
 
-const masterSeedKeyPrefix = "__hd_seed__:"
+const masterSeedKeyPrefix = "__hsm_slot__:"
 
-func New(path string) (*Keys, error) {
+func New(path, namespace string) (*Keys, error) {
 	store, err := newLevelStore(path)
 	if err != nil {
 		return nil, err
 	}
-	return &Keys{store: store}, nil
+	namespace = strings.TrimSpace(namespace)
+	if namespace == "" {
+		namespace = "software"
+	}
+	return &Keys{store: store, namespace: namespace}, nil
 }
 
 func (k *Keys) Close() error {
@@ -26,40 +34,32 @@ func (k *Keys) Close() error {
 	return k.store.Close()
 }
 
-func (k *Keys) GetPrivKey(publicKey string) (string, bool) {
-	key := []byte(publicKey)
-	data, err := k.store.Get(key)
-	if err != nil {
-		return "", false
-	}
-	return toString(data), true
-}
-
-func (k *Keys) StoreKeys(keyList []Key) bool {
-	for _, item := range keyList {
-		key := []byte(item.CompressPubkey)
-		value := toBytes(item.PrivateKey)
-		if err := k.store.Put(key, value); err != nil {
-			return false
-		}
-	}
-	return true
-}
-
-func (k *Keys) GetOrCreateMasterSeed(signType string) ([]byte, error) {
+func (k *Keys) LoadOrCreateSeed(slotID string) ([]byte, error) {
 	if k == nil || k.store == nil {
 		return nil, fmt.Errorf("keystore is not initialized")
 	}
-	key := []byte(masterSeedKeyPrefix + signType)
-	if seed, err := k.store.Get(key); err == nil && len(seed) > 0 {
-		return seed, nil
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	slotID = strings.TrimSpace(slotID)
+	if slotID == "" {
+		return nil, fmt.Errorf("slot id is required")
 	}
+	slotKey := []byte(masterSeedKeyPrefix + k.storageKey(slotID))
+	if seed, err := k.store.Get(slotKey); err == nil && len(seed) > 0 {
+		return append([]byte(nil), seed...), nil
+	}
+
 	seed := make([]byte, 64)
 	if _, err := rand.Read(seed); err != nil {
 		return nil, err
 	}
-	if err := k.store.Put(key, seed); err != nil {
+	if err := k.store.Put(slotKey, seed); err != nil {
 		return nil, err
 	}
-	return seed, nil
+	return append([]byte(nil), seed...), nil
+}
+
+func (k *Keys) storageKey(slotID string) string {
+	return strings.TrimSpace(k.namespace) + ":" + strings.TrimSpace(slotID)
 }
