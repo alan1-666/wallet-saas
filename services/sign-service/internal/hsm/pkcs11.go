@@ -3,6 +3,7 @@ package hsm
 import "errors"
 
 var ErrPKCS11ObjectNotFound = errors.New("pkcs11 object not found")
+var ErrPKCS11ProviderUnavailable = errors.New("real pkcs11 provider requires linux+cgo with a compatible pkcs11 module")
 
 type PKCS11Config struct {
 	ClusterID  string
@@ -23,6 +24,10 @@ type PKCS11Session interface {
 }
 
 type noopPKCS11Provider struct{}
+
+func NewDefaultPKCS11Provider() PKCS11Provider {
+	return newPlatformPKCS11Provider()
+}
 
 func NewNoopPKCS11Provider() PKCS11Provider {
 	return &noopPKCS11Provider{}

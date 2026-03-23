@@ -97,7 +97,7 @@ func (h *WithdrawHandler) CreateAddress(w http.ResponseWriter, r *http.Request) 
 	pubKey := prepared.PublicKey
 	var custodyScheme string
 	if !prepared.Existing {
-		derived, err := h.KeyManager.DeriveKey(r.Context(), req.SignType, prepared.KeyID)
+		derived, err := h.KeyManager.DeriveKey(r.Context(), req.TenantID, req.SignType, prepared.KeyID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
@@ -123,7 +123,7 @@ func (h *WithdrawHandler) CreateAddress(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	} else if h.KeyManager != nil {
-		if derived, err := h.KeyManager.DeriveKey(r.Context(), req.SignType, prepared.KeyID); err == nil {
+		if derived, err := h.KeyManager.DeriveKey(r.Context(), req.TenantID, req.SignType, prepared.KeyID); err == nil {
 			custodyScheme = derived.CustodyScheme
 		}
 	}

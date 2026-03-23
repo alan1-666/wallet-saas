@@ -29,7 +29,7 @@ type LedgerPort interface {
 }
 
 type SignPort interface {
-	SignMessage(ctx context.Context, signType, keyID, messageHash string) (string, error)
+	SignMessage(ctx context.Context, tenantID, signType, keyID, messageHash string) (string, error)
 }
 
 type DerivedKey struct {
@@ -46,7 +46,7 @@ type DerivedKey struct {
 }
 
 type KeyManagePort interface {
-	DeriveKey(ctx context.Context, signType, keyID string) (DerivedKey, error)
+	DeriveKey(ctx context.Context, tenantID, signType, keyID string) (DerivedKey, error)
 }
 
 type SignerRef struct {

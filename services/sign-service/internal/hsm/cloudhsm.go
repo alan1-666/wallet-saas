@@ -30,7 +30,7 @@ type CloudHSMBackend struct {
 }
 
 func NewCloudHSMBackend(cfg CloudHSMConfig) (*CloudHSMBackend, error) {
-	return NewCloudHSMBackendWithSessionProvider(cfg, NewNoopPKCS11Provider())
+	return NewCloudHSMBackendWithSessionProvider(cfg, NewDefaultPKCS11Provider())
 }
 
 func NewCloudHSMBackendWithSessionProvider(cfg CloudHSMConfig, provider PKCS11Provider) (*CloudHSMBackend, error) {
@@ -43,7 +43,7 @@ func NewCloudHSMBackendWithSessionProvider(cfg CloudHSMConfig, provider PKCS11Pr
 		return nil, fmt.Errorf("%w: cluster_id/region/user/pin/pkcs11_lib are required", ErrCloudHSMNotConfigured)
 	}
 	if provider == nil {
-		provider = NewNoopPKCS11Provider()
+		provider = NewDefaultPKCS11Provider()
 	}
 	return &CloudHSMBackend{cfg: cfg, sessionProvider: provider}, nil
 }

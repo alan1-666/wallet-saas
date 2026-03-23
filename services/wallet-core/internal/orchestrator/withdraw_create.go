@@ -96,7 +96,7 @@ func (o *WithdrawOrchestrator) buildSignAndBroadcast(ctx context.Context, req Wi
 		return BroadcastResult{TxHash: txHash, UnsignedTx: unsignedResult.UnsignedTx}, nil
 	}
 
-	signatures, publicKeys, err := o.buildSignatures(ctx, signType, req.Tx.Chain, signers, unsignedResult.SignHashes)
+	signatures, publicKeys, err := o.buildSignatures(ctx, req.TenantID, signType, req.Tx.Chain, signers, unsignedResult.SignHashes)
 	if err != nil {
 		return BroadcastResult{}, err
 	}

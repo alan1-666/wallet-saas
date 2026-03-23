@@ -54,14 +54,15 @@ func (s *GRPCServer) GetSupportSignWay(_ context.Context, req *pb.GetSupportSign
 }
 
 func (s *GRPCServer) DeriveKey(ctx context.Context, req *pb.DeriveKeyRequest) (*pb.DeriveKeyResponse, error) {
-	if _, err := s.policy.Authorize(ctx, "derive", req.GetSignType(), req.GetKeyId()); err != nil {
+	decision, err := s.policy.Authorize(ctx, "derive", req.GetSignType(), req.GetKeyId())
+	if err != nil {
 		return nil, err
 	}
 	ref, err := hd.ParseKeyID(req.GetKeyId())
 	if err != nil {
 		return nil, err
 	}
-	derived, err := s.custody.DeriveKey(ref)
+	derived, err := s.custody.DeriveKey(decision.TenantID, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -85,14 +86,15 @@ func (s *GRPCServer) DeriveKey(ctx context.Context, req *pb.DeriveKeyRequest) (*
 }
 
 func (s *GRPCServer) SignMessage(ctx context.Context, req *pb.SignMessageRequest) (*pb.SignMessageResponse, error) {
-	if _, err := s.policy.Authorize(ctx, "sign", req.GetSignType(), req.GetKeyId()); err != nil {
+	decision, err := s.policy.Authorize(ctx, "sign", req.GetSignType(), req.GetKeyId())
+	if err != nil {
 		return nil, err
 	}
 	ref, err := hd.ParseKeyID(req.GetKeyId())
 	if err != nil {
 		return nil, err
 	}
-	signature, err := s.custody.SignMessage(ref, req.GetMessageHash())
+	signature, err := s.custody.SignMessage(decision.TenantID, ref, req.GetMessageHash())
 	if err != nil {
 		return nil, err
 	}

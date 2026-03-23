@@ -21,29 +21,32 @@ Signing boundary service.
 - `SIGN_HSM_SLOT_PREFIX` logical HSM slot prefix for HD master material (default `master`)
 - `SIGN_CLOUDHSM_CLUSTER_ID` CloudHSM cluster id when `SIGN_HSM_BACKEND=cloudhsm`
 - `SIGN_CLOUDHSM_REGION` AWS region for CloudHSM backend
-- `SIGN_CLOUDHSM_USER` CloudHSM crypto user
-- `SIGN_CLOUDHSM_PIN` CloudHSM user pin/password
+- `SIGN_CLOUDHSM_USER` CloudHSM crypto user (CU) name
+- `SIGN_CLOUDHSM_PIN` CloudHSM CU password; the runtime PKCS#11 login string is built as `user:password`
 - `SIGN_CLOUDHSM_PKCS11_LIB` local PKCS#11 library path for CloudHSM client
 
 ## Current model
 - `sign-service` now depends on a custody provider interface; the current implementation is `local-hsm`
-- underneath the custody provider there is now a separate HSM backend interface; the current implementations are `software` and a `cloudhsm` placeholder backend
-- the `cloudhsm` backend now also includes a PKCS#11 session/provider skeleton, so local tests can exercise session lifecycle and slot persistence without talking to a real cluster
-- master material is loaded from a logical HSM slot per sign type; the current implementation uses a local software-backed slot store as the backend, so it can later be replaced by CloudHSM/PKCS#11 style backends without changing the gRPC contract
+- underneath the custody provider there is now a separate HSM backend interface; the current implementations are `software` and `cloudhsm`
+- logical HSM slots are now scoped as `slot_prefix:tenant_id:sign_type`, so each tenant gets an isolated HD master root per signing scheme
+- the `cloudhsm` backend now uses a PKCS#11 provider boundary; on `linux+cgo` it loads a real PKCS#11 module and persists tenant seeds as token-backed data objects, while local dev environments use a clear unsupported-platform stub or fake session provider in tests
+- the `software` backend keeps the same contract and stores tenant-scoped slots locally, so it can be swapped for CloudHSM without changing the gRPC contract
 - `DeriveKey` returns child public key material for the requested `key_id`
 - ECDSA chains additionally return account-level public derivation material (`account xpub` equivalent: compressed public key + chain code), so callers can derive child public keys without asking the signer to materialize child private keys
 - EdDSA chains remain direct-derive only because the current hardened derivation path does not support public-only child derivation
 - signer responses return `custody_scheme`, so upstream services can tell they are talking to the signer boundary backed by the current custody implementation
+- derive/sign requests must carry tenant metadata (`x-tenant-id`) so the signer can route to the correct tenant master slot
 
 ## Security TODO
-- implement real CloudHSM / PKCS#11 session management and slot-backed seed handling
 - move auth token management to a stronger internal identity mechanism
 - add richer policy rules such as destination whitelist / approval tiers
+- add seed rotation / tenant master migration tooling on top of the tenant-scoped slot model
 
 ## How To Test
 - local development does not require any AWS resource: keep `SIGN_HSM_BACKEND=software`
-- local unit tests already cover the `cloudhsm` placeholder backend and a fake PKCS#11 session provider
+- local unit tests cover tenant-scoped slot isolation, the `cloudhsm` backend with a fake PKCS#11 session provider, and the unsupported-platform fallback
 - startup now validates backend-specific env upfront, so `SIGN_HSM_BACKEND=cloudhsm` without the required CloudHSM variables will fail fast before the gRPC server starts
+- `SIGN_HSM_BACKEND=cloudhsm` on non-`linux+cgo` environments will fail at runtime with a clear unsupported-platform error; this is expected for macOS development machines
 - real CloudHSM integration testing will require:
   - an AWS account with a CloudHSM cluster
   - a VPC-reachable client host/container

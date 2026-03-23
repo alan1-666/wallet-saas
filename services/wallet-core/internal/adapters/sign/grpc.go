@@ -38,8 +38,8 @@ func (s *GRPCSign) Close() error {
 	return s.conn.Close()
 }
 
-func (s *GRPCSign) SignMessage(ctx context.Context, signType, keyID, messageHash string) (string, error) {
-	resp, err := s.client.SignMessage(s.attachAuth(ctx), &pb.SignMessageRequest{
+func (s *GRPCSign) SignMessage(ctx context.Context, tenantID, signType, keyID, messageHash string) (string, error) {
+	resp, err := s.client.SignMessage(s.attachMetadata(ctx, tenantID), &pb.SignMessageRequest{
 		KeyId:       keyID,
 		SignType:    signType,
 		MessageHash: messageHash,
@@ -53,8 +53,8 @@ func (s *GRPCSign) SignMessage(ctx context.Context, signType, keyID, messageHash
 	return resp.GetSignature(), nil
 }
 
-func (s *GRPCSign) DeriveKey(ctx context.Context, signType, keyID string) (ports.DerivedKey, error) {
-	resp, err := s.client.DeriveKey(s.attachAuth(ctx), &pb.DeriveKeyRequest{
+func (s *GRPCSign) DeriveKey(ctx context.Context, tenantID, signType, keyID string) (ports.DerivedKey, error) {
+	resp, err := s.client.DeriveKey(s.attachMetadata(ctx, tenantID), &pb.DeriveKeyRequest{
 		KeyId:    keyID,
 		SignType: signType,
 	})
@@ -82,9 +82,16 @@ func (s *GRPCSign) DeriveKey(ctx context.Context, signType, keyID string) (ports
 	return out, nil
 }
 
-func (s *GRPCSign) attachAuth(ctx context.Context) context.Context {
-	if strings.TrimSpace(s.authToken) == "" {
+func (s *GRPCSign) attachMetadata(ctx context.Context, tenantID string) context.Context {
+	pairs := make([]string, 0, 4)
+	if strings.TrimSpace(s.authToken) != "" {
+		pairs = append(pairs, "authorization", "Bearer "+s.authToken)
+	}
+	if strings.TrimSpace(tenantID) != "" {
+		pairs = append(pairs, "x-tenant-id", strings.TrimSpace(tenantID))
+	}
+	if len(pairs) == 0 {
 		return ctx
 	}
-	return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+s.authToken)
+	return metadata.AppendToOutgoingContext(ctx, pairs...)
 }

@@ -16,12 +16,12 @@ func TestAuthorizeAllowsHDKeyWithValidToken(t *testing.T) {
 		RateLimitWindow:      time.Minute,
 		RateLimitMaxRequests: 10,
 	})
-	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer token-123"))
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer token-123", "x-tenant-id", "tenant-a"))
 	decision, err := engine.Authorize(ctx, "derive", "ecdsa", "hd:ecdsa:ethereum:12:0:7")
 	if err != nil {
 		t.Fatalf("authorize failed: %v", err)
 	}
-	if decision.SignType != "ecdsa" || decision.KeyID != "hd:ecdsa:ethereum:12:0:7" {
+	if decision.SignType != "ecdsa" || decision.KeyID != "hd:ecdsa:ethereum:12:0:7" || decision.TenantID != "tenant-a" {
 		t.Fatalf("unexpected decision: %+v", decision)
 	}
 }
@@ -32,7 +32,7 @@ func TestAuthorizeRejectsInvalidToken(t *testing.T) {
 		RateLimitWindow:      time.Minute,
 		RateLimitMaxRequests: 10,
 	})
-	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer wrong-token"))
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer wrong-token", "x-tenant-id", "tenant-a"))
 	_, err := engine.Authorize(ctx, "sign", "ecdsa", "hd:ecdsa:ethereum:12:0:7")
 	if err == nil {
 		t.Fatalf("expected auth failure")
@@ -48,7 +48,7 @@ func TestAuthorizeRateLimit(t *testing.T) {
 		RateLimitWindow:      time.Hour,
 		RateLimitMaxRequests: 1,
 	})
-	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer token-123"))
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer token-123", "x-tenant-id", "tenant-a"))
 	if _, err := engine.Authorize(ctx, "sign", "ecdsa", "hd:ecdsa:ethereum:12:0:7"); err != nil {
 		t.Fatalf("first authorize failed: %v", err)
 	}
@@ -57,6 +57,22 @@ func TestAuthorizeRateLimit(t *testing.T) {
 		t.Fatalf("expected rate limit failure")
 	}
 	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("unexpected error code: %v", status.Code(err))
+	}
+}
+
+func TestAuthorizeRejectsMissingTenant(t *testing.T) {
+	engine := New(Config{
+		AuthToken:            "token-123",
+		RateLimitWindow:      time.Minute,
+		RateLimitMaxRequests: 10,
+	})
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer token-123"))
+	_, err := engine.Authorize(ctx, "sign", "ecdsa", "hd:ecdsa:ethereum:12:0:7")
+	if err == nil {
+		t.Fatalf("expected missing tenant failure")
+	}
+	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("unexpected error code: %v", status.Code(err))
 	}
 }

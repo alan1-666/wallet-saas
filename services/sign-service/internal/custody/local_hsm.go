@@ -44,16 +44,16 @@ func (h *LocalHSM) CustodyScheme() string {
 	return h.scheme
 }
 
-func (h *LocalHSM) DeriveKey(ref hd.KeyRef) (hd.DerivedKey, error) {
-	seed, err := h.backend.LoadOrCreateSeed(h.slotID(ref.SignType))
+func (h *LocalHSM) DeriveKey(tenantID string, ref hd.KeyRef) (hd.DerivedKey, error) {
+	seed, err := h.backend.LoadOrCreateSeed(h.slotID(tenantID, ref.SignType))
 	if err != nil {
 		return hd.DerivedKey{}, err
 	}
 	return hd.DerivePublicKey(seed, ref)
 }
 
-func (h *LocalHSM) SignMessage(ref hd.KeyRef, messageHash string) (string, error) {
-	seed, err := h.backend.LoadOrCreateSeed(h.slotID(ref.SignType))
+func (h *LocalHSM) SignMessage(tenantID string, ref hd.KeyRef, messageHash string) (string, error) {
+	seed, err := h.backend.LoadOrCreateSeed(h.slotID(tenantID, ref.SignType))
 	if err != nil {
 		return "", err
 	}
@@ -71,6 +71,32 @@ func (h *LocalHSM) SignMessage(ref hd.KeyRef, messageHash string) (string, error
 	}
 }
 
-func (h *LocalHSM) slotID(signType string) string {
-	return strings.TrimSpace(h.slotPrefix) + ":" + strings.TrimSpace(signType)
+func (h *LocalHSM) slotID(tenantID, signType string) string {
+	tenantID = sanitizeSlotPart(tenantID)
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	return strings.TrimSpace(h.slotPrefix) + ":" + tenantID + ":" + strings.TrimSpace(signType)
+}
+
+func sanitizeSlotPart(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(v))
+	for _, r := range v {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-', r == '_', r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }

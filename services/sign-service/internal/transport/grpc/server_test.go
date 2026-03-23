@@ -15,6 +15,7 @@ import (
 
 type fakeCustody struct {
 	scheme          string
+	lastTenantID    string
 	lastDeriveRef   hd.KeyRef
 	lastSignRef     hd.KeyRef
 	lastMessageHash string
@@ -24,7 +25,8 @@ func (f *fakeCustody) Close() error { return nil }
 
 func (f *fakeCustody) CustodyScheme() string { return f.scheme }
 
-func (f *fakeCustody) DeriveKey(ref hd.KeyRef) (hd.DerivedKey, error) {
+func (f *fakeCustody) DeriveKey(tenantID string, ref hd.KeyRef) (hd.DerivedKey, error) {
+	f.lastTenantID = tenantID
 	f.lastDeriveRef = ref
 	return hd.DerivedKey{
 		KeyID:                     ref.ID(),
@@ -39,7 +41,8 @@ func (f *fakeCustody) DeriveKey(ref hd.KeyRef) (hd.DerivedKey, error) {
 	}, nil
 }
 
-func (f *fakeCustody) SignMessage(ref hd.KeyRef, messageHash string) (string, error) {
+func (f *fakeCustody) SignMessage(tenantID string, ref hd.KeyRef, messageHash string) (string, error) {
+	f.lastTenantID = tenantID
 	f.lastSignRef = ref
 	f.lastMessageHash = messageHash
 	return "deadbeefsignature", nil
@@ -53,7 +56,7 @@ func TestDeriveKeyUsesCustodyProvider(t *testing.T) {
 		RateLimitMaxRequests: 10,
 	})
 	server := New(config.Config{}, provider, engine)
-	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer token-123"))
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer token-123", "x-tenant-id", "tenant-a"))
 
 	resp, err := server.DeriveKey(ctx, &pb.DeriveKeyRequest{
 		KeyId:    "hd:ecdsa:ethereum:1:0:7",
@@ -68,6 +71,9 @@ func TestDeriveKeyUsesCustodyProvider(t *testing.T) {
 	if provider.lastDeriveRef.ID() != "hd:ecdsa:ethereum:1:0:7" {
 		t.Fatalf("unexpected derive ref: %+v", provider.lastDeriveRef)
 	}
+	if provider.lastTenantID != "tenant-a" {
+		t.Fatalf("unexpected derive tenant: %s", provider.lastTenantID)
+	}
 	if resp.GetPublicKey() == nil || resp.GetPublicKey().GetCompressedHex() == "" {
 		t.Fatalf("expected derived public key")
 	}
@@ -81,7 +87,7 @@ func TestSignMessageUsesCustodyProvider(t *testing.T) {
 		RateLimitMaxRequests: 10,
 	})
 	server := New(config.Config{}, provider, engine)
-	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer token-123"))
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer token-123", "x-tenant-id", "tenant-b"))
 
 	resp, err := server.SignMessage(ctx, &pb.SignMessageRequest{
 		KeyId:       "hd:eddsa:solana:2:0:3",
@@ -96,6 +102,9 @@ func TestSignMessageUsesCustodyProvider(t *testing.T) {
 	}
 	if provider.lastSignRef.ID() != "hd:eddsa:solana:2:0:3" {
 		t.Fatalf("unexpected sign ref: %+v", provider.lastSignRef)
+	}
+	if provider.lastTenantID != "tenant-b" {
+		t.Fatalf("unexpected sign tenant: %s", provider.lastTenantID)
 	}
 	if provider.lastMessageHash != "deadbeef" {
 		t.Fatalf("unexpected sign payload: %s", provider.lastMessageHash)

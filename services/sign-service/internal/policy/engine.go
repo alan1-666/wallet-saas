@@ -23,6 +23,7 @@ type Config struct {
 
 type Decision struct {
 	TokenLabel string
+	TenantID   string
 	KeyID      string
 	SignType   string
 	Operation  string
@@ -46,6 +47,7 @@ type auditEvent struct {
 	At        string `json:"at"`
 	Allowed   bool   `json:"allowed"`
 	Operation string `json:"operation"`
+	TenantID  string `json:"tenant_id,omitempty"`
 	SignType  string `json:"sign_type,omitempty"`
 	KeyID     string `json:"key_id,omitempty"`
 	Token     string `json:"token"`
@@ -74,6 +76,7 @@ func (e *Engine) Authorize(ctx context.Context, operation, signType, keyID strin
 		Operation: strings.TrimSpace(operation),
 		KeyID:     strings.TrimSpace(keyID),
 		SignType:  normalizeSignType(signType),
+		TenantID:  tenantFromContext(ctx),
 	}
 	defer func() {
 		e.audit(decision, err == nil, err)
@@ -90,6 +93,10 @@ func (e *Engine) Authorize(ctx context.Context, operation, signType, keyID strin
 		return decision, err
 	}
 	if decision.Operation == "derive" || decision.Operation == "sign" {
+		if decision.TenantID == "" {
+			err = status.Error(codes.InvalidArgument, "tenant id is required")
+			return decision, err
+		}
 		if decision.KeyID == "" {
 			err = status.Error(codes.InvalidArgument, "key_id is required")
 			return decision, err
@@ -109,15 +116,15 @@ func (e *Engine) Authorize(ctx context.Context, operation, signType, keyID strin
 		}
 		decision.SignType = ref.SignType
 	}
-	if rateErr := e.allow(token, decision.Operation); rateErr != nil {
+	if rateErr := e.allow(token, decision.TenantID, decision.Operation); rateErr != nil {
 		err = rateErr
 		return decision, err
 	}
 	return decision, nil
 }
 
-func (e *Engine) allow(token, operation string) error {
-	key := strings.TrimSpace(token) + "|" + strings.TrimSpace(operation)
+func (e *Engine) allow(token, tenantID, operation string) error {
+	key := strings.TrimSpace(token) + "|" + strings.TrimSpace(tenantID) + "|" + strings.TrimSpace(operation)
 	now := time.Now()
 
 	e.mu.Lock()
@@ -140,6 +147,7 @@ func (e *Engine) audit(decision Decision, allowed bool, err error) {
 		At:        time.Now().UTC().Format(time.RFC3339),
 		Allowed:   allowed,
 		Operation: decision.Operation,
+		TenantID:  decision.TenantID,
 		SignType:  decision.SignType,
 		KeyID:     decision.KeyID,
 		Token:     decision.TokenLabel,
@@ -155,12 +163,12 @@ func (e *Engine) audit(decision Decision, allowed bool, err error) {
 	log.Printf("sign_policy %s", string(raw))
 }
 
-func tokenFromContext(ctx context.Context) string {
+func metadataValueFromContext(ctx context.Context, keys ...string) string {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return ""
 	}
-	for _, key := range []string{"authorization", "x-sign-token"} {
+	for _, key := range keys {
 		values := md.Get(key)
 		if len(values) == 0 {
 			continue
@@ -174,6 +182,14 @@ func tokenFromContext(ctx context.Context) string {
 		}
 	}
 	return ""
+}
+
+func tokenFromContext(ctx context.Context) string {
+	return metadataValueFromContext(ctx, "authorization", "x-sign-token")
+}
+
+func tenantFromContext(ctx context.Context) string {
+	return strings.TrimSpace(metadataValueFromContext(ctx, "x-tenant-id", "tenant-id", "x-tenant"))
 }
 
 func maskToken(token string) string {

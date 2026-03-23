@@ -40,7 +40,7 @@ func chainUsesEdDSA(chain string) bool {
 	}
 }
 
-func (o *WithdrawOrchestrator) buildSignatures(ctx context.Context, signType, chain string, signers []ports.SignerRef, signHashes []string) ([]string, []string, error) {
+func (o *WithdrawOrchestrator) buildSignatures(ctx context.Context, tenantID, signType, chain string, signers []ports.SignerRef, signHashes []string) ([]string, []string, error) {
 	signatures := make([]string, 0, len(signHashes))
 	publicKeys := make([]string, 0, len(signHashes))
 	for i, signHash := range signHashes {
@@ -49,7 +49,7 @@ func (o *WithdrawOrchestrator) buildSignatures(ctx context.Context, signType, ch
 			keyIdx = len(signers) - 1
 		}
 		signer := signers[keyIdx]
-		sig, err := o.Sign.SignMessage(ctx, signType, signer.KeyID, signHash)
+		sig, err := o.Sign.SignMessage(ctx, tenantID, signType, signer.KeyID, signHash)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -60,7 +60,7 @@ func (o *WithdrawOrchestrator) buildSignatures(ctx context.Context, signType, ch
 }
 
 func (o *WithdrawOrchestrator) signAndBroadcastRaw(ctx context.Context, req WithdrawRequest, signType string, signer ports.SignerRef, unsigned ports.BuildUnsignedResult) (string, error) {
-	sig, err := o.Sign.SignMessage(ctx, signType, signer.KeyID, unsigned.UnsignedTx)
+	sig, err := o.Sign.SignMessage(ctx, req.TenantID, signType, signer.KeyID, unsigned.UnsignedTx)
 	if err != nil {
 		return "", err
 	}
