@@ -36,6 +36,7 @@ type DepositOutboxPayload struct {
 	SweepThreshold string `json:"sweep_threshold"`
 	Confirmations  int64  `json:"confirmations"`
 	RequiredConfs  int64  `json:"required_confirmations"`
+	UnlockConfs    int64  `json:"unlock_confirmations"`
 	ScanStatus     string `json:"scan_status"`
 	Status         string `json:"status"`
 	ProjectNotify  bool   `json:"project_notify"`
@@ -111,6 +112,8 @@ func (s *Scanner) handleDepositOutboxEvent(ctx context.Context, ev store.OutboxE
 		ToAddress:     payload.ToAddress,
 		Confirmations: payload.Confirmations,
 		RequiredConfs: payload.RequiredConfs,
+		UnlockConfs:   payload.UnlockConfs,
+		ScanStatus:    payload.ScanStatus,
 		Status:        payload.Status,
 	}); err != nil {
 		return err

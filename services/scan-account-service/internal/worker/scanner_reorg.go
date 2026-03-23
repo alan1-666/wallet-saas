@@ -28,6 +28,10 @@ func (s *Scanner) reconcileReorgCandidates(ctx context.Context) error {
 		if minConf <= 0 {
 			minConf = 1
 		}
+		unlockConf := c.UnlockConfirmations
+		if unlockConf > 0 && unlockConf < minConf {
+			unlockConf = minConf
+		}
 
 		finality, err := s.ChainGateway.TxFinality(ctx, c.Chain, c.Coin, c.Network, c.TxHash)
 		if err != nil {
@@ -52,7 +56,7 @@ func (s *Scanner) reconcileReorgCandidates(ctx context.Context) error {
 			nextStatus = depositScanStatusReorged
 			nextConf = 0
 		} else {
-			nextStatus = resolveDepositScanStatus(finality.Status, finality.Confirmations, minConf, s.ReorgWindow)
+			nextStatus = resolveDepositScanStatus(finality.Status, finality.Confirmations, minConf, unlockConf, s.ReorgWindow)
 			nextConf = finality.Confirmations
 			if c.NotFoundCount > 0 {
 				if err := s.Store.ResetSeenEventNotFound(ctx, c); err != nil {
@@ -62,7 +66,7 @@ func (s *Scanner) reconcileReorgCandidates(ctx context.Context) error {
 			}
 		}
 
-		w := buildWatchFromCandidate(c, minConf)
+		w := buildWatchFromCandidate(c, minConf, unlockConf)
 		change, err := s.Store.UpsertSeenEvent(ctx, w, c.TxHash, c.EventIndex, nextStatus, nextConf, c.Amount, c.FromAddress, fallback(c.ToAddress, c.Address))
 		if err != nil {
 			log.Printf("reorg candidate upsert failed tenant=%s account=%s tx=%s err=%v", c.TenantID, c.AccountID, c.TxHash, err)
@@ -82,6 +86,7 @@ func (s *Scanner) reconcileReorgCandidates(ctx context.Context) error {
 			fallback(c.ToAddress, c.Address),
 			nextConf,
 			minConf,
+			unlockConf,
 			nextStatus,
 		); err != nil {
 			log.Printf("reorg candidate enqueue failed tenant=%s account=%s tx=%s status=%s err=%v", c.TenantID, c.AccountID, c.TxHash, nextStatus, err)
@@ -93,17 +98,18 @@ func (s *Scanner) reconcileReorgCandidates(ctx context.Context) error {
 	return nil
 }
 
-func buildWatchFromCandidate(c store.ReorgCandidate, minConf int64) store.WatchAddress {
+func buildWatchFromCandidate(c store.ReorgCandidate, minConf, unlockConf int64) store.WatchAddress {
 	return store.WatchAddress{
-		TenantID:          c.TenantID,
-		AccountID:         c.AccountID,
-		Model:             c.Model,
-		Chain:             c.Chain,
-		Coin:              c.Coin,
-		Network:           c.Network,
-		Address:           c.Address,
-		MinConfirmations:  minConf,
-		TreasuryAccountID: fallback(c.TreasuryAccountID, "treasury-main"),
-		SweepThreshold:    c.SweepThreshold,
+		TenantID:            c.TenantID,
+		AccountID:           c.AccountID,
+		Model:               c.Model,
+		Chain:               c.Chain,
+		Coin:                c.Coin,
+		Network:             c.Network,
+		Address:             c.Address,
+		MinConfirmations:    minConf,
+		UnlockConfirmations: unlockConf,
+		TreasuryAccountID:   fallback(c.TreasuryAccountID, "treasury-main"),
+		SweepThreshold:      c.SweepThreshold,
 	}
 }

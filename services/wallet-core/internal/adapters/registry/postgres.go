@@ -75,6 +75,7 @@ func (r *PostgresRegistry) UpsertWatchAddress(ctx context.Context, in ports.Watc
 	if in.MinConfirmations <= 0 {
 		in.MinConfirmations = 1
 	}
+	in.UnlockConfirmations = maxInt64(policy.UnlockConfirmations, in.MinConfirmations)
 	if strings.TrimSpace(in.TreasuryAccountID) == "" {
 		in.TreasuryAccountID = "treasury-main"
 	}
@@ -95,17 +96,18 @@ func (r *PostgresRegistry) UpsertWatchAddress(ctx context.Context, in ports.Watc
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO scan_watch_addresses (
   tenant_id, account_id, model, chain, coin, network, address,
-  min_confirmations, treasury_account_id, auto_sweep, sweep_threshold, active
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,TRUE)
+  min_confirmations, unlock_confirmations, treasury_account_id, auto_sweep, sweep_threshold, active
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,TRUE)
 ON CONFLICT (model, chain, coin, network, address, tenant_id, account_id)
 DO UPDATE SET
   min_confirmations=EXCLUDED.min_confirmations,
+  unlock_confirmations=EXCLUDED.unlock_confirmations,
   treasury_account_id=EXCLUDED.treasury_account_id,
   auto_sweep=EXCLUDED.auto_sweep,
   sweep_threshold=EXCLUDED.sweep_threshold,
   active=TRUE,
   updated_at=NOW()
-`, in.TenantID, in.AccountID, in.Model, in.Chain, in.Coin, in.Network, in.Address, in.MinConfirmations, in.TreasuryAccountID, in.AutoSweep, in.SweepThreshold)
+`, in.TenantID, in.AccountID, in.Model, in.Chain, in.Coin, in.Network, in.Address, in.MinConfirmations, in.UnlockConfirmations, in.TreasuryAccountID, in.AutoSweep, in.SweepThreshold)
 	if err != nil {
 		return err
 	}
@@ -356,6 +358,7 @@ LIMIT 1
 			Chain:                 meta.Chain,
 			Network:               meta.Network,
 			RequiredConfirmations: maxInt64(meta.MinConfirmations, 1),
+			UnlockConfirmations:   maxInt64(meta.MinConfirmations, 1),
 			SafeDepth:             maxInt64(meta.MinConfirmations, 1),
 			ReorgWindow:           maxInt64(meta.MinConfirmations*3, 6),
 			FeePolicy:             "{}",
@@ -371,6 +374,7 @@ LIMIT 1
 	if out.SafeDepth <= 0 {
 		out.SafeDepth = out.RequiredConfirmations
 	}
+	out.UnlockConfirmations = maxInt64(out.SafeDepth, out.RequiredConfirmations)
 	if out.ReorgWindow <= 0 {
 		out.ReorgWindow = maxInt64(out.RequiredConfirmations*3, 6)
 	}
@@ -501,6 +505,7 @@ coin TEXT NOT NULL,
 network TEXT NOT NULL,
 address TEXT NOT NULL,
 min_confirmations BIGINT NOT NULL DEFAULT 1,
+unlock_confirmations BIGINT NOT NULL DEFAULT 1,
 treasury_account_id TEXT NOT NULL DEFAULT 'treasury-main',
 auto_sweep BOOLEAN NOT NULL DEFAULT FALSE,
 sweep_threshold TEXT NOT NULL DEFAULT '0',
@@ -566,11 +571,17 @@ ON chain_policies (chain, network)
 	if _, err := r.db.ExecContext(ctx, `ALTER TABLE scan_watch_addresses ALTER COLUMN auto_sweep SET DEFAULT FALSE`); err != nil {
 		return fmt.Errorf("registry schema alter default failed: %w", err)
 	}
+	if _, err := r.db.ExecContext(ctx, `ALTER TABLE scan_watch_addresses ADD COLUMN IF NOT EXISTS unlock_confirmations BIGINT NOT NULL DEFAULT 1`); err != nil {
+		return fmt.Errorf("registry schema alter scan_watch_addresses unlock_confirmations failed: %w", err)
+	}
 	if _, err := r.db.ExecContext(ctx, `ALTER TABLE wallet_addresses ALTER COLUMN network DROP DEFAULT`); err != nil {
 		return fmt.Errorf("registry schema drop wallet_addresses network default failed: %w", err)
 	}
 	if _, err := r.db.ExecContext(ctx, `ALTER TABLE scan_watch_addresses ALTER COLUMN network DROP DEFAULT`); err != nil {
 		return fmt.Errorf("registry schema drop scan_watch_addresses network default failed: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `UPDATE scan_watch_addresses SET unlock_confirmations = GREATEST(COALESCE(unlock_confirmations, 0), COALESCE(min_confirmations, 1), 1) WHERE unlock_confirmations IS NULL OR unlock_confirmations <= 0 OR unlock_confirmations < min_confirmations`); err != nil {
+		return fmt.Errorf("registry schema backfill scan_watch_addresses unlock_confirmations failed: %w", err)
 	}
 	if _, err := r.db.ExecContext(ctx, `
 ALTER TABLE wallet_accounts ADD COLUMN IF NOT EXISTS account_tag TEXT NOT NULL DEFAULT ''

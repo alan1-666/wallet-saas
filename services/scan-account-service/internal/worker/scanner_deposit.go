@@ -186,7 +186,11 @@ func (s *Scanner) scanOneAccountGroup(ctx context.Context, group *watchGroup) er
 				if minConf <= 0 {
 					minConf = 1
 				}
-				status := resolveDepositScanStatus(tx.Status, tx.Confirmations, minConf, s.ReorgWindow)
+				unlockConf := w.UnlockConfirmations
+				if unlockConf > 0 && unlockConf < minConf {
+					unlockConf = minConf
+				}
+				status := resolveDepositScanStatus(tx.Status, tx.Confirmations, minConf, unlockConf, s.ReorgWindow)
 				change, err := s.Store.UpsertSeenEvent(ctx, w, tx.TxHash, eventIdx, status, tx.Confirmations, tx.Amount, tx.FromAddress, fallback(tx.ToAddress, w.Address))
 				if err != nil {
 					return err
@@ -206,6 +210,7 @@ func (s *Scanner) scanOneAccountGroup(ctx context.Context, group *watchGroup) er
 					fallback(tx.ToAddress, w.Address),
 					tx.Confirmations,
 					minConf,
+					unlockConf,
 					status,
 				); err != nil {
 					return err
@@ -274,11 +279,15 @@ func (s *Scanner) scanOneWatch(ctx context.Context, w store.WatchAddress, manage
 			if minConf <= 0 {
 				minConf = 1
 			}
+			unlockConf := w.UnlockConfirmations
+			if unlockConf > 0 && unlockConf < minConf {
+				unlockConf = minConf
+			}
 			eventIdx := tx.Index
 			if eventIdx <= 0 {
 				eventIdx = int64(idx)
 			}
-			status := resolveDepositScanStatus(tx.Status, tx.Confirmations, minConf, s.ReorgWindow)
+			status := resolveDepositScanStatus(tx.Status, tx.Confirmations, minConf, unlockConf, s.ReorgWindow)
 			change, err := s.Store.UpsertSeenEvent(ctx, w, tx.TxHash, eventIdx, status, tx.Confirmations, tx.Amount, tx.FromAddress, fallback(tx.ToAddress, w.Address))
 			if err != nil {
 				return err
@@ -288,7 +297,7 @@ func (s *Scanner) scanOneWatch(ctx context.Context, w store.WatchAddress, manage
 			}
 			log.Printf("deposit state transition tenant=%s account=%s order=%s tx=%s old_scan_status=%s new_scan_status=%s old_ledger_status=%s new_ledger_status=%s old_conf=%d new_conf=%d source=scan",
 				w.TenantID, w.AccountID, depositOrderID(tx.TxHash, eventIdx, w.AccountID, w.Network), tx.TxHash, change.OldStatus, change.NewStatus, mapDepositLedgerStatus(change.OldStatus), mapDepositLedgerStatus(change.NewStatus), change.OldConfirms, change.NewConfirms)
-			if err := s.enqueueDepositEvent(ctx, w, tx.TxHash, eventIdx, tx.Amount, tx.FromAddress, fallback(tx.ToAddress, w.Address), tx.Confirmations, minConf, status); err != nil {
+			if err := s.enqueueDepositEvent(ctx, w, tx.TxHash, eventIdx, tx.Amount, tx.FromAddress, fallback(tx.ToAddress, w.Address), tx.Confirmations, minConf, unlockConf, status); err != nil {
 				return err
 			}
 			lastTx = tx.TxHash
@@ -318,7 +327,7 @@ func (s *Scanner) scanOneWatch(ctx context.Context, w store.WatchAddress, manage
 	return s.Store.UpsertCheckpoint(ctx, w, cursor, lastTx)
 }
 
-func (s *Scanner) enqueueDepositEvent(ctx context.Context, w store.WatchAddress, txHash string, eventIndex int64, amount, fromAddr, toAddr string, confirmations, requiredConfirmations int64, scanStatus string) error {
+func (s *Scanner) enqueueDepositEvent(ctx context.Context, w store.WatchAddress, txHash string, eventIndex int64, amount, fromAddr, toAddr string, confirmations, requiredConfirmations, unlockConfirmations int64, scanStatus string) error {
 	orderID := depositOrderID(txHash, eventIndex, w.AccountID, w.Network)
 	payload := DepositOutboxPayload{
 		TenantID:       w.TenantID,
@@ -342,6 +351,7 @@ func (s *Scanner) enqueueDepositEvent(ctx context.Context, w store.WatchAddress,
 		ProjectNotify:  strings.TrimSpace(w.AccountID) != strings.TrimSpace(fallback(w.TreasuryAccountID, "treasury-main")),
 		SweepTrigger:   w.AutoSweep && strings.TrimSpace(w.AccountID) != strings.TrimSpace(fallback(w.TreasuryAccountID, "treasury-main")),
 		RequiredConfs:  requiredConfirmations,
+		UnlockConfs:    unlockConfirmations,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

@@ -38,6 +38,10 @@ ON rpc_endpoints (chain, network, model, status, priority, weight);
 ### 2) `chain_policies` (wallet-core policy plane)
 Defines finality/reorg strategy by `chain + network`.
 
+- `required_confirmations`: deposit credit threshold
+- `safe_depth`: deposit unlock threshold for withdraw (`scan_watch_addresses.unlock_confirmations` is seeded from this field)
+- `reorg_window`: fallback reconciliation window / not-found monitoring horizon
+
 ```sql
 CREATE TABLE IF NOT EXISTS chain_policies (
   id BIGSERIAL PRIMARY KEY,
@@ -115,4 +119,3 @@ SET allow_deposit=EXCLUDED.allow_deposit,
   - deposit: `dep:{tenant}:{chain}:{network}:{txHash}:{index}`
   - sweep: `sweep:{tenant}:{chain}:{network}:{txHash}:{index}`
 - dispatcher marks `DONE` on success, retries with exponential backoff on failure.
-

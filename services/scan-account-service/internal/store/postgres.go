@@ -15,17 +15,18 @@ type Postgres struct {
 }
 
 type WatchAddress struct {
-	TenantID          string
-	AccountID         string
-	Model             string
-	Chain             string
-	Coin              string
-	Network           string
-	Address           string
-	MinConfirmations  int64
-	TreasuryAccountID string
-	AutoSweep         bool
-	SweepThreshold    string
+	TenantID            string
+	AccountID           string
+	Model               string
+	Chain               string
+	Coin                string
+	Network             string
+	Address             string
+	MinConfirmations    int64
+	UnlockConfirmations int64
+	TreasuryAccountID   string
+	AutoSweep           bool
+	SweepThreshold      string
 }
 
 type PendingWithdraw struct {
@@ -60,24 +61,25 @@ type SeenEventChange struct {
 }
 
 type ReorgCandidate struct {
-	TenantID          string
-	AccountID         string
-	Model             string
-	Chain             string
-	Coin              string
-	Network           string
-	Address           string
-	TxHash            string
-	EventIndex        int64
-	Status            string
-	Confirmations     int64
-	Amount            string
-	FromAddress       string
-	ToAddress         string
-	NotFoundCount     int64
-	MinConfirmations  int64
-	TreasuryAccountID string
-	SweepThreshold    string
+	TenantID            string
+	AccountID           string
+	Model               string
+	Chain               string
+	Coin                string
+	Network             string
+	Address             string
+	TxHash              string
+	EventIndex          int64
+	Status              string
+	Confirmations       int64
+	Amount              string
+	FromAddress         string
+	ToAddress           string
+	NotFoundCount       int64
+	MinConfirmations    int64
+	UnlockConfirmations int64
+	TreasuryAccountID   string
+	SweepThreshold      string
 }
 
 type OutboxEvent struct {
@@ -118,7 +120,7 @@ func (p *Postgres) Close() error {
 
 func (p *Postgres) ListWatchAddresses(ctx context.Context, model string, limit int) ([]WatchAddress, error) {
 	const queryWithRegistry = `
-SELECT sw.tenant_id, sw.account_id, sw.model, sw.chain, sw.coin, sw.network, sw.address, sw.min_confirmations, sw.treasury_account_id, sw.auto_sweep, sw.sweep_threshold
+SELECT sw.tenant_id, sw.account_id, sw.model, sw.chain, sw.coin, sw.network, sw.address, sw.min_confirmations, sw.unlock_confirmations, sw.treasury_account_id, sw.auto_sweep, sw.sweep_threshold
 FROM scan_watch_addresses sw
 WHERE sw.active = TRUE
   AND sw.model = $1
@@ -139,7 +141,7 @@ ORDER BY sw.id ASC
 LIMIT $2
 `
 	const queryFallback = `
-SELECT tenant_id, account_id, model, chain, coin, network, address, min_confirmations, treasury_account_id, auto_sweep, sweep_threshold
+SELECT tenant_id, account_id, model, chain, coin, network, address, min_confirmations, unlock_confirmations, treasury_account_id, auto_sweep, sweep_threshold
 FROM scan_watch_addresses
 WHERE active = TRUE
   AND model = $1
@@ -158,7 +160,7 @@ LIMIT $2
 	out := make([]WatchAddress, 0, limit)
 	for rows.Next() {
 		var w WatchAddress
-		if err := rows.Scan(&w.TenantID, &w.AccountID, &w.Model, &w.Chain, &w.Coin, &w.Network, &w.Address, &w.MinConfirmations, &w.TreasuryAccountID, &w.AutoSweep, &w.SweepThreshold); err != nil {
+		if err := rows.Scan(&w.TenantID, &w.AccountID, &w.Model, &w.Chain, &w.Coin, &w.Network, &w.Address, &w.MinConfirmations, &w.UnlockConfirmations, &w.TreasuryAccountID, &w.AutoSweep, &w.SweepThreshold); err != nil {
 			return nil, err
 		}
 		out = append(out, w)
@@ -380,6 +382,7 @@ SELECT
   se.to_address,
   se.not_found_count,
   COALESCE(sw.min_confirmations, 1) AS min_confirmations,
+  COALESCE(sw.unlock_confirmations, GREATEST(COALESCE(sw.min_confirmations, 1), 1)) AS unlock_confirmations,
   COALESCE(sw.treasury_account_id, 'treasury-main') AS treasury_account_id,
   COALESCE(sw.sweep_threshold, '0') AS sweep_threshold
 FROM scan_seen_events se
@@ -394,7 +397,7 @@ LEFT JOIN scan_watch_addresses sw
 WHERE UPPER(COALESCE(se.status, '')) NOT IN ('REORGED', 'REVERTED')
   AND (
     se.not_found_count > 0
-    OR se.confirmations < (GREATEST(COALESCE(sw.min_confirmations, 1), 1) + $1)
+    OR se.confirmations < GREATEST(COALESCE(sw.unlock_confirmations, GREATEST(COALESCE(sw.min_confirmations, 1), 1) + $1), GREATEST(COALESCE(sw.min_confirmations, 1), 1))
   )
 ORDER BY se.updated_at DESC, se.created_at DESC
 LIMIT $2
@@ -423,6 +426,7 @@ LIMIT $2
 			&item.ToAddress,
 			&item.NotFoundCount,
 			&item.MinConfirmations,
+			&item.UnlockConfirmations,
 			&item.TreasuryAccountID,
 			&item.SweepThreshold,
 		); err != nil {
@@ -700,6 +704,7 @@ func (p *Postgres) initSchema(ctx context.Context) error {
   network TEXT NOT NULL,
   address TEXT NOT NULL,
   min_confirmations BIGINT NOT NULL DEFAULT 1,
+  unlock_confirmations BIGINT NOT NULL DEFAULT 1,
   treasury_account_id TEXT NOT NULL DEFAULT 'treasury-main',
   auto_sweep BOOLEAN NOT NULL DEFAULT FALSE,
   sweep_threshold TEXT NOT NULL DEFAULT '0',
@@ -793,6 +798,7 @@ func (p *Postgres) initSchema(ctx context.Context) error {
 	alterStmts := []string{
 		`ALTER TABLE scan_watch_addresses ADD COLUMN IF NOT EXISTS model TEXT NOT NULL DEFAULT 'account'`,
 		`ALTER TABLE scan_watch_addresses ADD COLUMN IF NOT EXISTS network TEXT NOT NULL DEFAULT 'unknown'`,
+		`ALTER TABLE scan_watch_addresses ADD COLUMN IF NOT EXISTS unlock_confirmations BIGINT NOT NULL DEFAULT 1`,
 		`ALTER TABLE scan_watch_addresses ALTER COLUMN auto_sweep SET DEFAULT FALSE`,
 		`ALTER TABLE scan_seen_events ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'PENDING'`,
 		`ALTER TABLE scan_seen_events ADD COLUMN IF NOT EXISTS confirmations BIGINT NOT NULL DEFAULT 0`,
@@ -815,6 +821,10 @@ WHERE model = '' OR model IS NULL`)
 UPDATE scan_watch_addresses
 SET network='unknown'
 WHERE network = '' OR network IS NULL`)
+	_, _ = p.db.ExecContext(ctx, `
+UPDATE scan_watch_addresses
+SET unlock_confirmations = GREATEST(COALESCE(unlock_confirmations, 0), COALESCE(min_confirmations, 1), 1)
+WHERE unlock_confirmations IS NULL OR unlock_confirmations <= 0 OR unlock_confirmations < min_confirmations`)
 	_, _ = p.db.ExecContext(ctx, `ALTER TABLE scan_watch_addresses ALTER COLUMN network DROP DEFAULT`)
 
 	_, err := p.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_scan_watch_addr ON scan_watch_addresses (model, chain, coin, network, address)`)

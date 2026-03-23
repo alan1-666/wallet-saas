@@ -76,7 +76,7 @@ func max(a, b int64) int64 {
 	return b
 }
 
-func resolveDepositScanStatus(rawStatus string, confirmations, minConf, reorgWindow int64) string {
+func resolveDepositScanStatus(rawStatus string, confirmations, minConf, unlockConf, reorgWindow int64) string {
 	status := strings.ToUpper(strings.TrimSpace(rawStatus))
 	switch status {
 	case depositScanStatusReorged, "REVERTED", "FAILED":
@@ -86,6 +86,9 @@ func resolveDepositScanStatus(rawStatus string, confirmations, minConf, reorgWin
 	}
 	if minConf <= 0 {
 		minConf = 1
+	}
+	if unlockConf > 0 && unlockConf < minConf {
+		unlockConf = minConf
 	}
 	if reorgWindow < 0 {
 		reorgWindow = 0
@@ -99,7 +102,10 @@ func resolveDepositScanStatus(rawStatus string, confirmations, minConf, reorgWin
 	if confirmations < minConf {
 		return depositScanStatusPending
 	}
-	if reorgWindow > 0 && confirmations >= minConf+reorgWindow {
+	if unlockConf > 0 && confirmations >= unlockConf {
+		return depositScanStatusFinalized
+	}
+	if unlockConf <= 0 && reorgWindow > 0 && confirmations >= minConf+reorgWindow {
 		return depositScanStatusFinalized
 	}
 	return depositScanStatusConfirmed

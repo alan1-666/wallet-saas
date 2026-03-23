@@ -33,20 +33,23 @@ func TestShouldFailOutgoingNotFound(t *testing.T) {
 }
 
 func TestResolveDepositScanStatus(t *testing.T) {
-	if got := resolveDepositScanStatus("", -1, 6, 6); got != depositScanStatusSeen {
+	if got := resolveDepositScanStatus("", -1, 6, 12, 6); got != depositScanStatusSeen {
 		t.Fatalf("expected SEEN for unknown pending tx, got %s", got)
 	}
-	if got := resolveDepositScanStatus("pending", 3, 6, 6); got != depositScanStatusPending {
+	if got := resolveDepositScanStatus("pending", 3, 6, 12, 6); got != depositScanStatusPending {
 		t.Fatalf("expected PENDING below min conf, got %s", got)
 	}
-	if got := resolveDepositScanStatus("confirmed", 6, 6, 6); got != depositScanStatusConfirmed {
+	if got := resolveDepositScanStatus("confirmed", 6, 6, 12, 6); got != depositScanStatusConfirmed {
 		t.Fatalf("expected CONFIRMED at min conf, got %s", got)
 	}
-	if got := resolveDepositScanStatus("confirmed", 12, 6, 6); got != depositScanStatusFinalized {
-		t.Fatalf("expected FINALIZED after reorg window, got %s", got)
+	if got := resolveDepositScanStatus("confirmed", 12, 6, 12, 6); got != depositScanStatusFinalized {
+		t.Fatalf("expected FINALIZED at unlock conf, got %s", got)
 	}
-	if got := resolveDepositScanStatus("reverted", 0, 6, 6); got != depositScanStatusReorged {
+	if got := resolveDepositScanStatus("reverted", 0, 6, 12, 6); got != depositScanStatusReorged {
 		t.Fatalf("expected REORGED for reverted tx, got %s", got)
+	}
+	if got := resolveDepositScanStatus("confirmed", 12, 6, 0, 6); got != depositScanStatusFinalized {
+		t.Fatalf("expected FINALIZED to fall back to reorg window, got %s", got)
 	}
 }
 

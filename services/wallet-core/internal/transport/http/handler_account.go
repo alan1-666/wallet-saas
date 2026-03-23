@@ -27,11 +27,13 @@ func (h *WithdrawHandler) Balance(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(BalanceResponse{
-		TenantID:  tenantID,
-		AccountID: accountID,
-		Asset:     asset,
-		Available: bal.Available,
-		Frozen:    bal.Frozen,
+		TenantID:       tenantID,
+		AccountID:      accountID,
+		Asset:          asset,
+		Available:      bal.Available,
+		Frozen:         bal.Frozen,
+		WithdrawLocked: bal.WithdrawLocked,
+		Withdrawable:   bal.Withdrawable,
 	})
 }
 

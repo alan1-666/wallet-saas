@@ -91,14 +91,18 @@ type LedgerStatus struct {
 }
 
 type BalanceSnapshot struct {
-	Available string
-	Frozen    string
+	Available      string
+	Frozen         string
+	WithdrawLocked string
+	Withdrawable   string
 }
 
 type AccountAsset struct {
 	Asset          string `json:"asset"`
 	Available      string `json:"available"`
 	Frozen         string `json:"frozen"`
+	WithdrawLocked string `json:"withdraw_locked"`
+	Withdrawable   string `json:"withdrawable"`
 	VaultAvailable string `json:"vault_available"`
 }
 
@@ -115,6 +119,8 @@ type DepositCreditInput struct {
 	ToAddress     string
 	Confirmations int64
 	RequiredConfs int64
+	UnlockConfs   int64
+	ScanStatus    string
 	Status        string
 }
 
@@ -186,24 +192,25 @@ type ChainAddressPort interface {
 }
 
 type WatchAddressInput struct {
-	TenantID          string
-	AccountID         string
-	Model             string
-	Chain             string
-	Coin              string
-	Network           string
-	Address           string
-	KeyID             string
-	PublicKey         string
-	SignType          string
-	AddressType       string
-	DerivationPath    string
-	ChangeIndex       int64
-	AddressIndex      int64
-	MinConfirmations  int64
-	TreasuryAccountID string
-	AutoSweep         bool
-	SweepThreshold    string
+	TenantID            string
+	AccountID           string
+	Model               string
+	Chain               string
+	Coin                string
+	Network             string
+	Address             string
+	KeyID               string
+	PublicKey           string
+	SignType            string
+	AddressType         string
+	DerivationPath      string
+	ChangeIndex         int64
+	AddressIndex        int64
+	MinConfirmations    int64
+	UnlockConfirmations int64
+	TreasuryAccountID   string
+	AutoSweep           bool
+	SweepThreshold      string
 }
 
 type WalletAccount struct {
@@ -249,6 +256,7 @@ type ChainPolicy struct {
 	Chain                 string `json:"chain"`
 	Network               string `json:"network"`
 	RequiredConfirmations int64  `json:"required_confirmations"`
+	UnlockConfirmations   int64  `json:"unlock_confirmations"`
 	SafeDepth             int64  `json:"safe_depth"`
 	ReorgWindow           int64  `json:"reorg_window"`
 	FeePolicy             string `json:"fee_policy"`

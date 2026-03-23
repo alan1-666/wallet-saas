@@ -53,7 +53,7 @@ func (m *MockLedger) FailSweepOnChain(_ context.Context, _, _, _ string, _ int64
 }
 
 func (m *MockLedger) GetBalance(_ context.Context, _, _, _ string) (ports.BalanceSnapshot, error) {
-	return ports.BalanceSnapshot{Available: "0", Frozen: "0"}, nil
+	return ports.BalanceSnapshot{Available: "0", Frozen: "0", WithdrawLocked: "0", Withdrawable: "0"}, nil
 }
 
 func (m *MockLedger) ListAccountAssets(_ context.Context, _, _ string) ([]ports.AccountAsset, error) {

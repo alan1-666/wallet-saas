@@ -76,6 +76,13 @@ FOR UPDATE
 	if err != nil {
 		return err
 	}
+	withdrawable, err := computeWithdrawable(current.Available, current.WithdrawLocked)
+	if err != nil {
+		return err
+	}
+	if _, err := subDecimalString(withdrawable, amount); err != nil {
+		return err
+	}
 	avail, err := subDecimalString(current.Available, amount)
 	if err != nil {
 		return err
@@ -85,7 +92,7 @@ FOR UPDATE
 		return err
 	}
 
-	if err := l.upsertBalanceTx(ctx, tx, tenantID, accountID, asset, avail, frozen); err != nil {
+	if err := l.upsertBalanceTx(ctx, tx, tenantID, accountID, asset, avail, frozen, current.WithdrawLocked); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -222,7 +229,7 @@ WHERE tenant_id=$4 AND order_id=$5
 	if err != nil {
 		return err
 	}
-	if err := l.upsertBalanceTx(ctx, tx, tenantID, accountID, asset, current.Available, frozen); err != nil {
+	if err := l.upsertBalanceTx(ctx, tx, tenantID, accountID, asset, current.Available, frozen, current.WithdrawLocked); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -295,7 +302,7 @@ FOR UPDATE
 	if err != nil {
 		return err
 	}
-	if err := l.upsertBalanceTx(ctx, tx, tenantID, accountID, asset, avail, frozen); err != nil {
+	if err := l.upsertBalanceTx(ctx, tx, tenantID, accountID, asset, avail, frozen, current.WithdrawLocked); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -395,7 +402,7 @@ ON CONFLICT (tenant_id, order_id, entry_type) DO NOTHING
 	if err != nil {
 		return err
 	}
-	if err := l.upsertBalanceTx(ctx, tx, tenantID, accountID, asset, avail, frozen); err != nil {
+	if err := l.upsertBalanceTx(ctx, tx, tenantID, accountID, asset, avail, frozen, current.WithdrawLocked); err != nil {
 		return err
 	}
 
@@ -434,58 +441,43 @@ func (l *PostgresLedger) CreditDeposit(ctx context.Context, in ports.DepositCred
 	if requiredConfs <= 0 {
 		requiredConfs = 1
 	}
-	targetStatus := normalizeDepositStatus(strings.TrimSpace(in.Status))
-	switch targetStatus {
-	case "REVERTED":
-	case "PENDING":
-	case "CONFIRMED":
-	default:
-		if in.Confirmations >= requiredConfs {
-			targetStatus = "CONFIRMED"
-		} else {
-			targetStatus = "PENDING"
-		}
+	unlockConfs := in.UnlockConfs
+	if unlockConfs > 0 && unlockConfs < requiredConfs {
+		unlockConfs = requiredConfs
 	}
+	targetStatus := normalizeDepositLifecycleStatus(in.ScanStatus, in.Status, in.Confirmations, requiredConfs, unlockConfs)
 
 	var (
 		oldStatus string
 		oldCredit bool
+		oldUnlock bool
 	)
 	err = tx.QueryRowContext(ctx, `
-SELECT status, credited
+SELECT status, credited, unlocked
 FROM deposit_events
 WHERE tenant_id=$1 AND order_id=$2
 FOR UPDATE
-`, in.TenantID, in.OrderID).Scan(&oldStatus, &oldCredit)
+`, in.TenantID, in.OrderID).Scan(&oldStatus, &oldCredit, &oldUnlock)
 	if err == sql.ErrNoRows {
 		_, err = tx.ExecContext(ctx, `
-INSERT INTO deposit_events (tenant_id, account_id, order_id, chain, network, coin, amount, tx_hash, from_address, to_address, confirmations, required_confirmations, status, credited)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,FALSE)
-`, in.TenantID, in.AccountID, in.OrderID, in.Chain, in.Network, in.Coin, in.Amount, in.TxHash, in.FromAddress, in.ToAddress, in.Confirmations, requiredConfs, targetStatus)
+INSERT INTO deposit_events (tenant_id, account_id, order_id, chain, network, coin, amount, tx_hash, from_address, to_address, confirmations, required_confirmations, unlock_confirmations, status, credited, unlocked)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,FALSE,FALSE)
+`, in.TenantID, in.AccountID, in.OrderID, in.Chain, in.Network, in.Coin, in.Amount, in.TxHash, in.FromAddress, in.ToAddress, in.Confirmations, requiredConfs, maxInt64(unlockConfs, requiredConfs), targetStatus)
 		if err != nil {
 			return err
 		}
 		oldStatus = ""
 		oldCredit = false
+		oldUnlock = false
 	} else if err != nil {
 		return err
 	}
 
-	effectiveStatus := targetStatus
-	switch normalizeDepositStatus(oldStatus) {
-	case "REVERTED":
-		effectiveStatus = "REVERTED"
-	case "CONFIRMED":
-		if targetStatus == "PENDING" {
-			effectiveStatus = "CONFIRMED"
-		}
-	}
-	if targetStatus == "REVERTED" {
-		effectiveStatus = "REVERTED"
-	}
+	effectiveStatus := resolveEffectiveDepositStatus(oldStatus, targetStatus)
 
 	newCredited := oldCredit
-	if !oldCredit && effectiveStatus == "CONFIRMED" {
+	newUnlocked := oldUnlock
+	if !oldCredit && depositStatusCredits(effectiveStatus) {
 		bal, err := l.getBalanceTx(ctx, tx, in.TenantID, in.AccountID, in.Coin)
 		if err != nil {
 			return err
@@ -494,7 +486,11 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,FALSE)
 		if err != nil {
 			return err
 		}
-		if err := l.upsertBalanceTx(ctx, tx, in.TenantID, in.AccountID, in.Coin, avail, bal.Frozen); err != nil {
+		locked, err := addDecimalString(bal.WithdrawLocked, in.Amount)
+		if err != nil {
+			return err
+		}
+		if err := l.upsertBalanceTx(ctx, tx, in.TenantID, in.AccountID, in.Coin, avail, bal.Frozen, locked); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -507,6 +503,32 @@ ON CONFLICT (tenant_id, biz_type, biz_id, account_id, entry_side) DO NOTHING
 		newCredited = true
 	}
 
+	if newCredited && !oldUnlock && effectiveStatus == "FINALIZED" {
+		bal, err := l.getBalanceTx(ctx, tx, in.TenantID, in.AccountID, in.Coin)
+		if err != nil {
+			return err
+		}
+		locked, err := subDecimalString(bal.WithdrawLocked, in.Amount)
+		if err != nil {
+			return err
+		}
+		if err := l.upsertBalanceTx(ctx, tx, in.TenantID, in.AccountID, in.Coin, bal.Available, bal.Frozen, locked); err != nil {
+			return err
+		}
+		withdrawable, err := computeWithdrawable(bal.Available, locked)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO ledger_journals (tenant_id, biz_type, biz_id, account_id, asset, entry_side, amount, balance_after)
+VALUES ($1,'DEPOSIT',$2,$3,$4,'UNLOCK',$5,$6)
+ON CONFLICT (tenant_id, biz_type, biz_id, account_id, entry_side) DO NOTHING
+`, in.TenantID, in.OrderID, in.AccountID, in.Coin, in.Amount, withdrawable); err != nil {
+			return err
+		}
+		newUnlocked = true
+	}
+
 	if oldCredit && effectiveStatus == "REVERTED" {
 		bal, err := l.getBalanceTx(ctx, tx, in.TenantID, in.AccountID, in.Coin)
 		if err != nil {
@@ -516,7 +538,14 @@ ON CONFLICT (tenant_id, biz_type, biz_id, account_id, entry_side) DO NOTHING
 		if err != nil {
 			return err
 		}
-		if err := l.upsertBalanceTx(ctx, tx, in.TenantID, in.AccountID, in.Coin, avail, bal.Frozen); err != nil {
+		locked := bal.WithdrawLocked
+		if !oldUnlock {
+			locked, err = subDecimalString(bal.WithdrawLocked, in.Amount)
+			if err != nil {
+				return err
+			}
+		}
+		if err := l.upsertBalanceTx(ctx, tx, in.TenantID, in.AccountID, in.Coin, avail, bal.Frozen, locked); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -527,6 +556,7 @@ ON CONFLICT (tenant_id, biz_type, biz_id, account_id, entry_side) DO NOTHING
 			return err
 		}
 		newCredited = false
+		newUnlocked = false
 		if err := l.recordReorgAuditEvent(ctx, tx, in); err != nil {
 			log.Printf("ledger audit event write failed tenant=%s account=%s order=%s tx=%s err=%v",
 				in.TenantID, in.AccountID, in.OrderID, in.TxHash, err)
@@ -545,11 +575,13 @@ SET account_id=$1,
     to_address=$8,
     confirmations=GREATEST(confirmations,$9),
     required_confirmations=$10,
-    status=$11,
-    credited=$12,
+    unlock_confirmations=$11,
+    status=$12,
+    credited=$13,
+    unlocked=$14,
     updated_at=NOW()
-WHERE tenant_id=$13 AND order_id=$14
-`, in.AccountID, in.Chain, in.Network, in.Coin, in.Amount, in.TxHash, in.FromAddress, in.ToAddress, in.Confirmations, requiredConfs, effectiveStatus, newCredited, in.TenantID, in.OrderID)
+WHERE tenant_id=$15 AND order_id=$16
+`, in.AccountID, in.Chain, in.Network, in.Coin, in.Amount, in.TxHash, in.FromAddress, in.ToAddress, in.Confirmations, requiredConfs, maxInt64(unlockConfs, requiredConfs), effectiveStatus, newCredited, newUnlocked, in.TenantID, in.OrderID)
 	if err != nil {
 		return err
 	}
@@ -689,13 +721,17 @@ WHERE tenant_id=$3 AND sweep_order_id=$4 AND status <> 'DONE'
 func (l *PostgresLedger) GetBalance(ctx context.Context, tenantID, accountID, asset string) (ports.BalanceSnapshot, error) {
 	var out ports.BalanceSnapshot
 	err := l.db.QueryRowContext(ctx, `
-SELECT available, frozen
+SELECT available, frozen, withdraw_locked
 FROM ledger_balances
 WHERE tenant_id=$1 AND account_id=$2 AND asset=$3
-`, tenantID, accountID, asset).Scan(&out.Available, &out.Frozen)
+`, tenantID, accountID, asset).Scan(&out.Available, &out.Frozen, &out.WithdrawLocked)
 	if err == sql.ErrNoRows {
-		return ports.BalanceSnapshot{Available: "0", Frozen: "0"}, nil
+		return ports.BalanceSnapshot{Available: "0", Frozen: "0", WithdrawLocked: "0", Withdrawable: "0"}, nil
 	}
+	if err != nil {
+		return ports.BalanceSnapshot{}, err
+	}
+	out.Withdrawable, err = computeWithdrawable(out.Available, out.WithdrawLocked)
 	if err != nil {
 		return ports.BalanceSnapshot{}, err
 	}
@@ -707,6 +743,7 @@ func (l *PostgresLedger) ListAccountAssets(ctx context.Context, tenantID, accoun
 SELECT COALESCE(lb.asset, vb.asset) AS asset,
        COALESCE(lb.available, '0') AS available,
        COALESCE(lb.frozen, '0') AS frozen,
+       COALESCE(lb.withdraw_locked, '0') AS withdraw_locked,
        COALESCE(vb.available, '0') AS vault_available
 FROM ledger_balances lb
 FULL OUTER JOIN vault_balances vb
@@ -724,7 +761,11 @@ ORDER BY 1
 	out := make([]ports.AccountAsset, 0, 8)
 	for rows.Next() {
 		var item ports.AccountAsset
-		if err := rows.Scan(&item.Asset, &item.Available, &item.Frozen, &item.VaultAvailable); err != nil {
+		if err := rows.Scan(&item.Asset, &item.Available, &item.Frozen, &item.WithdrawLocked, &item.VaultAvailable); err != nil {
+			return nil, err
+		}
+		item.Withdrawable, err = computeWithdrawable(item.Available, item.WithdrawLocked)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, item)
@@ -735,27 +776,31 @@ ORDER BY 1
 func (l *PostgresLedger) getBalanceTx(ctx context.Context, tx *sql.Tx, tenantID, accountID, asset string) (ports.BalanceSnapshot, error) {
 	var out ports.BalanceSnapshot
 	err := tx.QueryRowContext(ctx, `
-SELECT available, frozen
+SELECT available, frozen, withdraw_locked
 FROM ledger_balances
 WHERE tenant_id=$1 AND account_id=$2 AND asset=$3
 FOR UPDATE
-`, tenantID, accountID, asset).Scan(&out.Available, &out.Frozen)
+`, tenantID, accountID, asset).Scan(&out.Available, &out.Frozen, &out.WithdrawLocked)
 	if err == sql.ErrNoRows {
-		return ports.BalanceSnapshot{Available: "0", Frozen: "0"}, nil
+		return ports.BalanceSnapshot{Available: "0", Frozen: "0", WithdrawLocked: "0", Withdrawable: "0"}, nil
 	}
+	if err != nil {
+		return ports.BalanceSnapshot{}, err
+	}
+	out.Withdrawable, err = computeWithdrawable(out.Available, out.WithdrawLocked)
 	if err != nil {
 		return ports.BalanceSnapshot{}, err
 	}
 	return out, nil
 }
 
-func (l *PostgresLedger) upsertBalanceTx(ctx context.Context, tx *sql.Tx, tenantID, accountID, asset, available, frozen string) error {
+func (l *PostgresLedger) upsertBalanceTx(ctx context.Context, tx *sql.Tx, tenantID, accountID, asset, available, frozen, withdrawLocked string) error {
 	_, err := tx.ExecContext(ctx, `
-INSERT INTO ledger_balances (tenant_id, account_id, asset, available, frozen)
-VALUES ($1,$2,$3,$4,$5)
+INSERT INTO ledger_balances (tenant_id, account_id, asset, available, frozen, withdraw_locked)
+VALUES ($1,$2,$3,$4,$5,$6)
 ON CONFLICT (tenant_id, account_id, asset)
-DO UPDATE SET available=EXCLUDED.available, frozen=EXCLUDED.frozen, updated_at=NOW()
-`, tenantID, accountID, asset, available, frozen)
+DO UPDATE SET available=EXCLUDED.available, frozen=EXCLUDED.frozen, withdraw_locked=EXCLUDED.withdraw_locked, updated_at=NOW()
+`, tenantID, accountID, asset, available, frozen, withdrawLocked)
 	return err
 }
 
@@ -825,6 +870,7 @@ account_id TEXT NOT NULL,
 asset TEXT NOT NULL,
 available TEXT NOT NULL DEFAULT '0',
 frozen TEXT NOT NULL DEFAULT '0',
+withdraw_locked TEXT NOT NULL DEFAULT '0',
 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 PRIMARY KEY (tenant_id, account_id, asset)
 );`,
@@ -855,8 +901,10 @@ from_address TEXT NOT NULL DEFAULT '',
 to_address TEXT NOT NULL DEFAULT '',
 confirmations BIGINT NOT NULL DEFAULT 0,
 required_confirmations BIGINT NOT NULL DEFAULT 1,
+unlock_confirmations BIGINT NOT NULL DEFAULT 1,
 status TEXT NOT NULL,
 credited BOOLEAN NOT NULL DEFAULT FALSE,
+unlocked BOOLEAN NOT NULL DEFAULT FALSE,
 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 UNIQUE (tenant_id, order_id)
@@ -931,8 +979,11 @@ UNIQUE (tenant_id, biz_type, biz_id, treasury_account_id, entry_side)
 		`ALTER TABLE ledger_freezes ADD COLUMN IF NOT EXISTS confirmations BIGINT NOT NULL DEFAULT 0;`,
 		`ALTER TABLE ledger_freezes ADD COLUMN IF NOT EXISTS required_confirmations BIGINT NOT NULL DEFAULT 1;`,
 		`ALTER TABLE ledger_entries ADD COLUMN IF NOT EXISTS asset TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE ledger_balances ADD COLUMN IF NOT EXISTS withdraw_locked TEXT NOT NULL DEFAULT '0';`,
 		`ALTER TABLE deposit_events ADD COLUMN IF NOT EXISTS required_confirmations BIGINT NOT NULL DEFAULT 1;`,
+		`ALTER TABLE deposit_events ADD COLUMN IF NOT EXISTS unlock_confirmations BIGINT NOT NULL DEFAULT 1;`,
 		`ALTER TABLE deposit_events ADD COLUMN IF NOT EXISTS credited BOOLEAN NOT NULL DEFAULT FALSE;`,
+		`ALTER TABLE deposit_events ADD COLUMN IF NOT EXISTS unlocked BOOLEAN NOT NULL DEFAULT FALSE;`,
 		`ALTER TABLE deposit_events ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();`,
 		`ALTER TABLE deposit_events ADD COLUMN IF NOT EXISTS network TEXT NOT NULL DEFAULT 'unknown';`,
 		`ALTER TABLE sweep_orders ADD COLUMN IF NOT EXISTS chain TEXT NOT NULL DEFAULT '';`,
@@ -995,13 +1046,85 @@ func parseIntString(v string) (*big.Int, error) {
 	return n, nil
 }
 
-func normalizeDepositStatus(v string) string {
-	switch strings.ToUpper(strings.TrimSpace(v)) {
-	case "REVERTED", "REORGED":
+func computeWithdrawable(available, withdrawLocked string) (string, error) {
+	return subDecimalString(available, withdrawLocked)
+}
+
+func normalizeDepositLifecycleStatus(scanStatus, fallbackStatus string, confirmations, requiredConfs, unlockConfs int64) string {
+	for _, candidate := range []string{scanStatus, fallbackStatus} {
+		switch strings.ToUpper(strings.TrimSpace(candidate)) {
+		case "REVERTED", "REORGED", "FAILED":
+			return "REVERTED"
+		case "FINALIZED":
+			return "FINALIZED"
+		case "CONFIRMED":
+			if unlockConfs > 0 && confirmations >= unlockConfs {
+				return "FINALIZED"
+			}
+			return "CONFIRMED"
+		}
+	}
+	if requiredConfs <= 0 {
+		requiredConfs = 1
+	}
+	if unlockConfs > 0 && unlockConfs < requiredConfs {
+		unlockConfs = requiredConfs
+	}
+	if unlockConfs > 0 && confirmations >= unlockConfs {
+		return "FINALIZED"
+	}
+	if confirmations >= requiredConfs {
+		return "CONFIRMED"
+	}
+	return "PENDING"
+}
+
+func resolveEffectiveDepositStatus(oldStatus, targetStatus string) string {
+	oldStatus = normalizeStoredDepositStatus(oldStatus)
+	targetStatus = normalizeStoredDepositStatus(targetStatus)
+	if targetStatus == "REVERTED" {
 		return "REVERTED"
-	case "CONFIRMED", "FINALIZED":
+	}
+	switch oldStatus {
+	case "REVERTED":
+		return "REVERTED"
+	case "FINALIZED":
+		return "FINALIZED"
+	case "CONFIRMED":
+		if targetStatus == "FINALIZED" {
+			return "FINALIZED"
+		}
+		return "CONFIRMED"
+	default:
+		return targetStatus
+	}
+}
+
+func normalizeStoredDepositStatus(v string) string {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "REVERTED", "REORGED", "FAILED":
+		return "REVERTED"
+	case "FINALIZED":
+		return "FINALIZED"
+	case "CONFIRMED":
 		return "CONFIRMED"
 	default:
 		return "PENDING"
 	}
+}
+
+func depositStatusCredits(status string) bool {
+	switch normalizeStoredDepositStatus(status) {
+	case "CONFIRMED", "FINALIZED":
+		return true
+	default:
+		return false
+	}
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }

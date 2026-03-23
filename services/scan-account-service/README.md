@@ -49,5 +49,6 @@ Dedicated account-model scanner.
 
 ## Notes
 - EVM native assets use chain-wide block-window scans with shared checkpoints; Solana / Tron stay on address-history style scans.
+- `scan_watch_addresses.min_confirmations` is the credit threshold; `unlock_confirmations` is the withdraw-unlock threshold and is seeded from `chain_policies.safe_depth`.
 - `auto_sweep=false` now really disables sweep triggering for that watch address.
 - Deposit ledger notify is independent from project callback / sweep execution. A sweep failure will no longer block the deposit event from reaching `DONE`.

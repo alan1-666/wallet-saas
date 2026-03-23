@@ -29,6 +29,8 @@ type DepositNotifyRequest struct {
 	ToAddress     string `json:"to_address"`
 	Confirmations int64  `json:"confirmations"`
 	RequiredConfs int64  `json:"required_confirmations"`
+	UnlockConfs   int64  `json:"unlock_confirmations"`
+	ScanStatus    string `json:"scan_status"`
 	Status        string `json:"status"`
 }
 

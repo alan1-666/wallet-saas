@@ -146,6 +146,7 @@ func (m *MockRegistry) GetChainPolicy(_ context.Context, chain, network string) 
 		Chain:                 chain,
 		Network:               network,
 		RequiredConfirmations: 1,
+		UnlockConfirmations:   1,
 		SafeDepth:             1,
 		ReorgWindow:           6,
 		FeePolicy:             "{}",

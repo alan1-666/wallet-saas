@@ -39,6 +39,8 @@ func (h *WithdrawHandler) DepositNotify(w http.ResponseWriter, r *http.Request) 
 		ToAddress:     req.ToAddress,
 		Confirmations: req.Confirmations,
 		RequiredConfs: req.RequiredConfs,
+		UnlockConfs:   req.UnlockConfs,
+		ScanStatus:    req.ScanStatus,
 		Status:        req.Status,
 	})
 	if err != nil {

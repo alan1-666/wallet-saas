@@ -107,13 +107,16 @@ State orchestration and domain logic.
   "to_address": "0xto",
   "confirmations": 2,
   "required_confirmations": 6,
+  "unlock_confirmations": 12,
+  "scan_status": "CONFIRMED",
   "status": "PENDING"
 }
 ```
-- status transitions supported: `PENDING -> CONFIRMED -> REVERTED`
-- `CONFIRMED` credits balance once; `REVERTED` debits it back once (idempotent)
-- state regression is blocked (`CONFIRMED` will not be downgraded back to `PENDING`)
-- compatibility aliases: inbound `FINALIZED` is treated as `CONFIRMED`, and `REORGED` is treated as `REVERTED`
+- status transitions supported: `PENDING -> CONFIRMED -> FINALIZED -> REVERTED`
+- `CONFIRMED` credits balance once and increases `withdraw_locked`
+- `FINALIZED` unlocks the credited amount for withdraw by decreasing `withdraw_locked`
+- `REVERTED` debits the credited balance back once (idempotent), and also unwinds any remaining `withdraw_locked`
+- state regression is blocked (`CONFIRMED` will not be downgraded back to `PENDING`, `FINALIZED` is sticky until `REVERTED`)
 
 ### Current limitation
 - If `key_ids` length is less than input count, last key will be reused for remaining inputs.
@@ -123,6 +126,7 @@ State orchestration and domain logic.
 - broadcast success: `ConfirmWithdraw`
 - broadcast failure (or sign/build failure): `ReleaseWithdraw`
 - on-chain confirmation threshold for withdraw/sweep is taken from `chain_metadata.min_confirmations`
+- deposit credit threshold comes from `required_confirmations`; unlock threshold comes from `unlock_confirmations` and defaults to `chain_policies.safe_depth`
 - business risk controls are intentionally out of scope for wallet-core; projects should approve/deny withdrawals before calling the SaaS APIs
 
 ## New tables

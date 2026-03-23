@@ -50,6 +50,8 @@ type DepositNotifyRequest struct {
 	ToAddress     string `json:"to_address"`
 	Confirmations int64  `json:"confirmations"`
 	RequiredConfs int64  `json:"required_confirmations"`
+	UnlockConfs   int64  `json:"unlock_confirmations"`
+	ScanStatus    string `json:"scan_status"`
 	Status        string `json:"status"`
 }
 
@@ -113,11 +115,13 @@ type SweepRunResponse struct {
 }
 
 type BalanceResponse struct {
-	TenantID  string `json:"tenant_id"`
-	AccountID string `json:"account_id"`
-	Asset     string `json:"asset"`
-	Available string `json:"available"`
-	Frozen    string `json:"frozen"`
+	TenantID       string `json:"tenant_id"`
+	AccountID      string `json:"account_id"`
+	Asset          string `json:"asset"`
+	Available      string `json:"available"`
+	Frozen         string `json:"frozen"`
+	WithdrawLocked string `json:"withdraw_locked"`
+	Withdrawable   string `json:"withdrawable"`
 }
 
 type CreateAddressRequest struct {
