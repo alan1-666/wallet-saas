@@ -73,6 +73,10 @@ func (m *MockLedger) CreditDeposit(_ context.Context, _ ports.DepositCreditInput
 	return nil
 }
 
+func (m *MockLedger) ReserveSweep(_ context.Context, _ ports.SweepReserveInput) error {
+	return nil
+}
+
 func (m *MockLedger) StartSweep(_ context.Context, _ ports.SweepCollectInput) error {
 	return nil
 }

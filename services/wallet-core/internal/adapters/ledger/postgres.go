@@ -1132,6 +1132,46 @@ DO UPDATE SET
 	return err
 }
 
+func (l *PostgresLedger) ReserveSweep(ctx context.Context, in ports.SweepReserveInput) error {
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	requiredConfs := in.RequiredConfs
+	if requiredConfs <= 0 {
+		requiredConfs = 1
+	}
+	res, err := tx.ExecContext(ctx, `
+INSERT INTO sweep_orders (tenant_id, sweep_order_id, from_account_id, treasury_account_id, chain, network, asset, amount, tx_hash, confirmations, required_confirmations, status)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'',0,$9,'RESERVED')
+ON CONFLICT (tenant_id, sweep_order_id) DO NOTHING
+`, in.TenantID, in.SweepOrderID, in.FromAccountID, in.TreasuryAccountID, in.Chain, in.Network, in.Asset, in.Amount, requiredConfs)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err == nil && rows == 0 {
+		var existingStatus string
+		if err := tx.QueryRowContext(ctx, `
+SELECT status
+FROM sweep_orders
+WHERE tenant_id=$1 AND sweep_order_id=$2
+FOR UPDATE
+`, in.TenantID, in.SweepOrderID).Scan(&existingStatus); err != nil {
+			return err
+		}
+		switch strings.ToUpper(strings.TrimSpace(existingStatus)) {
+		case "RESERVED", "BROADCASTED", "DONE":
+			return tx.Commit()
+		default:
+			return fmt.Errorf("sweep order already exists with status=%s", existingStatus)
+		}
+	}
+	return tx.Commit()
+}
+
 func (l *PostgresLedger) StartSweep(ctx context.Context, in ports.SweepCollectInput) error {
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1143,13 +1183,24 @@ func (l *PostgresLedger) StartSweep(ctx context.Context, in ports.SweepCollectIn
 	if requiredConfs <= 0 {
 		requiredConfs = 1
 	}
-	if _, err := tx.ExecContext(ctx, `
+	res, err := tx.ExecContext(ctx, `
+UPDATE sweep_orders
+SET tx_hash=$1, chain=$2, network=$3, required_confirmations=$4, status='BROADCASTED', updated_at=NOW()
+WHERE tenant_id=$5 AND sweep_order_id=$6 AND status IN ('RESERVED', 'BROADCASTED')
+`, in.TxHash, in.Chain, in.Network, requiredConfs, in.TenantID, in.SweepOrderID)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err == nil && rows == 0 {
+		if _, err := tx.ExecContext(ctx, `
 INSERT INTO sweep_orders (tenant_id, sweep_order_id, from_account_id, treasury_account_id, chain, network, asset, amount, tx_hash, confirmations, required_confirmations, status)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,$10,'BROADCASTED')
 ON CONFLICT (tenant_id, sweep_order_id)
 DO UPDATE SET tx_hash=EXCLUDED.tx_hash, chain=EXCLUDED.chain, network=EXCLUDED.network, required_confirmations=EXCLUDED.required_confirmations, status='BROADCASTED', updated_at=NOW()
 `, in.TenantID, in.SweepOrderID, in.FromAccountID, in.TreasuryAccountID, in.Chain, in.Network, in.Asset, in.Amount, in.TxHash, requiredConfs); err != nil {
-		return err
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -1257,23 +1308,35 @@ func (l *PostgresLedger) ReserveTreasuryTransfer(ctx context.Context, in ports.T
 		requiredConfs = 1
 	}
 
-	var existingStatus string
-	err = tx.QueryRowContext(ctx, `
+	res, err := tx.ExecContext(ctx, `
+INSERT INTO treasury_transfer_orders (
+  tenant_id, transfer_order_id, from_account_id, to_account_id, chain, network, asset, amount,
+  required_confirmations, status, source_tier, destination_tier
+) VALUES (
+  $1,$2,$3,$4,$5,$6,$7,$8,$9,'RESERVED',$10,$11
+)
+ON CONFLICT (tenant_id, transfer_order_id) DO NOTHING
+`, in.TenantID, in.TransferOrderID, in.FromAccountID, in.ToAccountID, in.Chain, in.Network, in.Asset, in.Amount, requiredConfs, strings.TrimSpace(in.SourceTier), strings.TrimSpace(in.DestinationTier))
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err == nil && rows == 0 {
+		var existingStatus string
+		if err := tx.QueryRowContext(ctx, `
 SELECT status
 FROM treasury_transfer_orders
 WHERE tenant_id=$1 AND transfer_order_id=$2
 FOR UPDATE
-`, in.TenantID, in.TransferOrderID).Scan(&existingStatus)
-	if err == nil {
+`, in.TenantID, in.TransferOrderID).Scan(&existingStatus); err != nil {
+			return err
+		}
 		switch strings.ToUpper(strings.TrimSpace(existingStatus)) {
 		case "RESERVED", "BROADCASTED", "DONE":
 			return tx.Commit()
 		default:
 			return fmt.Errorf("treasury transfer already exists with status=%s", existingStatus)
 		}
-	}
-	if err != nil && err != sql.ErrNoRows {
-		return err
 	}
 
 	sourceBal, err := l.getVaultBalanceTx(ctx, tx, in.TenantID, in.FromAccountID, in.Asset)
@@ -1285,17 +1348,6 @@ FOR UPDATE
 		return err
 	}
 	if err := l.upsertVaultBalanceTx(ctx, tx, in.TenantID, in.FromAccountID, in.Asset, nextSourceAvail); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO treasury_transfer_orders (
-  tenant_id, transfer_order_id, from_account_id, to_account_id, chain, network, asset, amount,
-  required_confirmations, status, source_tier, destination_tier
-) VALUES (
-  $1,$2,$3,$4,$5,$6,$7,$8,$9,'RESERVED',$10,$11
-)
-ON CONFLICT (tenant_id, transfer_order_id) DO NOTHING
-`, in.TenantID, in.TransferOrderID, in.FromAccountID, in.ToAccountID, in.Chain, in.Network, in.Asset, in.Amount, requiredConfs, strings.TrimSpace(in.SourceTier), strings.TrimSpace(in.DestinationTier)); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `

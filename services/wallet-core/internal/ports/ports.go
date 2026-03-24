@@ -21,6 +21,7 @@ type LedgerPort interface {
 	ReleaseWithdraw(ctx context.Context, tenantID, accountID, orderID, reason string) error
 	GetWithdrawStatus(ctx context.Context, tenantID, orderID string) (LedgerStatus, error)
 	CreditDeposit(ctx context.Context, in DepositCreditInput) error
+	ReserveSweep(ctx context.Context, in SweepReserveInput) error
 	StartSweep(ctx context.Context, in SweepCollectInput) error
 	ConfirmSweepOnChain(ctx context.Context, in SweepConfirmInput) error
 	FailSweepOnChain(ctx context.Context, tenantID, sweepOrderID, reason string, confirmations int64) error
@@ -177,6 +178,18 @@ type SweepCollectInput struct {
 	Asset             string
 	Amount            string
 	TxHash            string
+	RequiredConfs     int64
+}
+
+type SweepReserveInput struct {
+	TenantID          string
+	FromAccountID     string
+	TreasuryAccountID string
+	SweepOrderID      string
+	Chain             string
+	Network           string
+	Asset             string
+	Amount            string
 	RequiredConfs     int64
 }
 

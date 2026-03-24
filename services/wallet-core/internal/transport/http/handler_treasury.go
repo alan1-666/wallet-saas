@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"wallet-saas-v2/services/wallet-core/internal/orchestrator"
 	"wallet-saas-v2/services/wallet-core/internal/ports"
@@ -127,8 +128,10 @@ func (h *WithdrawHandler) TreasuryTransfer(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := h.Ledger.MarkTreasuryTransferBroadcasted(r.Context(), req.TenantID, req.TransferOrderID, broadcast.TxHash, requiredConfs); err != nil {
-		http.Error(w, "treasury transfer broadcasted but ledger mark failed: "+err.Error(), http.StatusInternalServerError)
+	if err := retryLedgerMutation(3, 200*time.Millisecond, func() error {
+		return h.Ledger.MarkTreasuryTransferBroadcasted(r.Context(), req.TenantID, req.TransferOrderID, broadcast.TxHash, requiredConfs)
+	}); err != nil {
+		http.Error(w, "treasury transfer broadcasted but ledger mark failed, tx_hash="+broadcast.TxHash+": "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 

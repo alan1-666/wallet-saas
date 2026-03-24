@@ -6,6 +6,7 @@ import (
 	"math/big"
 	"net/http"
 	"strings"
+	"time"
 
 	"wallet-saas-v2/services/wallet-core/internal/orchestrator"
 	"wallet-saas-v2/services/wallet-core/internal/ports"
@@ -119,6 +120,20 @@ func (h *WithdrawHandler) SweepRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if err := h.Ledger.ReserveSweep(r.Context(), ports.SweepReserveInput{
+		TenantID:          req.TenantID,
+		FromAccountID:     req.FromAccountID,
+		TreasuryAccountID: destinationAccountID,
+		SweepOrderID:      req.SweepOrderID,
+		Chain:             req.Chain,
+		Network:           req.Network,
+		Asset:             req.Asset,
+		Amount:            req.Amount,
+		RequiredConfs:     requiredConfs,
+	}); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	broadcast, err := h.Orchestrator.BroadcastOnly(r.Context(), orchestrator.WithdrawRequest{
 		TenantID:      req.TenantID,
@@ -140,26 +155,30 @@ func (h *WithdrawHandler) SweepRun(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	if err != nil {
+		_ = h.Ledger.FailSweepOnChain(r.Context(), req.TenantID, req.SweepOrderID, err.Error(), 0)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	err = h.Ledger.StartSweep(r.Context(), ports.SweepCollectInput{
-		TenantID:          req.TenantID,
-		FromAccountID:     req.FromAccountID,
-		TreasuryAccountID: destinationAccountID,
-		SweepOrderID:      req.SweepOrderID,
-		Chain:             req.Chain,
-		Network:           req.Network,
-		Asset:             req.Asset,
-		Amount:            req.Amount,
-		TxHash:            broadcast.TxHash,
-		RequiredConfs:     requiredConfs,
+	err = retryLedgerMutation(3, 200*time.Millisecond, func() error {
+		return h.Ledger.StartSweep(r.Context(), ports.SweepCollectInput{
+			TenantID:          req.TenantID,
+			FromAccountID:     req.FromAccountID,
+			TreasuryAccountID: destinationAccountID,
+			SweepOrderID:      req.SweepOrderID,
+			Chain:             req.Chain,
+			Network:           req.Network,
+			Asset:             req.Asset,
+			Amount:            req.Amount,
+			TxHash:            broadcast.TxHash,
+			RequiredConfs:     requiredConfs,
+		})
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, "sweep broadcasted but ledger mark failed, tx_hash="+broadcast.TxHash+": "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(SweepRunResponse{Status: "BROADCASTED", TxHash: broadcast.TxHash, DestinationAccountID: destinationAccountID, DestinationTier: destinationTier})
 }
