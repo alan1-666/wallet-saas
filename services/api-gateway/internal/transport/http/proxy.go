@@ -61,11 +61,11 @@ func (h *ProxyHandler) ProxyWithdraw(w http.ResponseWriter, r *http.Request) {
 
 func (h *ProxyHandler) ProxyDepositNotify(w http.ResponseWriter, r *http.Request) {
 	h.proxy(w, r, "/v1/deposit/notify", routeSpec{
-		Method:        http.MethodPost,
-		Action:        "deposit_notify",
-		Permission:    "deposit",
-		IdempotencyOp: "deposit_notify",
-		RequireTenant: true,
+		Method:              http.MethodPost,
+		Action:              "deposit_notify",
+		Permission:          "deposit",
+		IdempotencyOp:       "deposit_notify",
+		RequireTenant:       true,
 		RequireChainNetwork: true,
 	})
 }
@@ -81,11 +81,11 @@ func (h *ProxyHandler) ProxyWithdrawOnchainNotify(w http.ResponseWriter, r *http
 
 func (h *ProxyHandler) ProxySweepRun(w http.ResponseWriter, r *http.Request) {
 	h.proxy(w, r, "/v1/sweep/run", routeSpec{
-		Method:        http.MethodPost,
-		Action:        "sweep_run",
-		Permission:    "sweep",
-		IdempotencyOp: "sweep_run",
-		RequireTenant: true,
+		Method:              http.MethodPost,
+		Action:              "sweep_run",
+		Permission:          "sweep",
+		IdempotencyOp:       "sweep_run",
+		RequireTenant:       true,
 		RequireChainNetwork: true,
 	})
 }
@@ -95,6 +95,42 @@ func (h *ProxyHandler) ProxySweepOnchainNotify(w http.ResponseWriter, r *http.Re
 		Method:        http.MethodPost,
 		Action:        "sweep_onchain_notify",
 		Permission:    "sweep",
+		RequireTenant: true,
+	})
+}
+
+func (h *ProxyHandler) ProxyTreasuryTransfer(w http.ResponseWriter, r *http.Request) {
+	h.proxy(w, r, "/v1/treasury/transfer", routeSpec{
+		Method:              http.MethodPost,
+		Action:              "treasury_transfer",
+		Permission:          "sweep",
+		IdempotencyOp:       "treasury_transfer",
+		RequireTenant:       true,
+		RequireChainNetwork: true,
+	})
+}
+
+func (h *ProxyHandler) ProxyTreasuryTransferOnchainNotify(w http.ResponseWriter, r *http.Request) {
+	h.proxy(w, r, "/v1/treasury/onchain/notify", routeSpec{
+		Method:        http.MethodPost,
+		Action:        "treasury_transfer_onchain_notify",
+		Permission:    "sweep",
+		RequireTenant: true,
+	})
+}
+
+func (h *ProxyHandler) ProxyTreasuryTransferStatus(w http.ResponseWriter, r *http.Request) {
+	h.proxy(w, r, "/v1/treasury/transfer/status", routeSpec{
+		Method:        http.MethodGet,
+		Action:        "treasury_transfer_status",
+		RequireTenant: true,
+	})
+}
+
+func (h *ProxyHandler) ProxyTreasuryWaterline(w http.ResponseWriter, r *http.Request) {
+	h.proxy(w, r, "/v1/treasury/waterline", routeSpec{
+		Method:        http.MethodGet,
+		Action:        "treasury_waterline",
 		RequireTenant: true,
 	})
 }
@@ -117,10 +153,10 @@ func (h *ProxyHandler) ProxyBalance(w http.ResponseWriter, r *http.Request) {
 
 func (h *ProxyHandler) ProxyCreateAddress(w http.ResponseWriter, r *http.Request) {
 	h.proxy(w, r, "/v1/address/create", routeSpec{
-		Method:        http.MethodPost,
-		Action:        "address_create",
-		Permission:    "deposit",
-		RequireTenant: true,
+		Method:              http.MethodPost,
+		Action:              "address_create",
+		Permission:          "deposit",
+		RequireTenant:       true,
 		RequireChainNetwork: true,
 	})
 }

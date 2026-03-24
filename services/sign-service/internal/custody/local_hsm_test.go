@@ -8,7 +8,12 @@ import (
 )
 
 func TestLocalHSMCustodySchemeAndSlotLoading(t *testing.T) {
-	backend, err := hsm.NewSoftwareBackend(t.TempDir(), "software")
+	backend, err := hsm.NewSoftwareBackend(hsm.SoftwareConfig{
+		Path:       t.TempDir(),
+		Namespace:  "software",
+		Password:   "test-password",
+		AutoCreate: true,
+	})
 	if err != nil {
 		t.Fatalf("new software backend: %v", err)
 	}
@@ -44,7 +49,12 @@ func TestLocalHSMCustodySchemeAndSlotLoading(t *testing.T) {
 }
 
 func TestLocalHSMUsesTenantScopedSlots(t *testing.T) {
-	backend, err := hsm.NewSoftwareBackend(t.TempDir(), "software")
+	backend, err := hsm.NewSoftwareBackend(hsm.SoftwareConfig{
+		Path:       t.TempDir(),
+		Namespace:  "software",
+		Password:   "test-password",
+		AutoCreate: true,
+	})
 	if err != nil {
 		t.Fatalf("new software backend: %v", err)
 	}
@@ -76,7 +86,12 @@ func TestLocalHSMUsesTenantScopedSlots(t *testing.T) {
 }
 
 func TestLocalHSMSignMatchesDerivedKey(t *testing.T) {
-	backend, err := hsm.NewSoftwareBackend(t.TempDir(), "software")
+	backend, err := hsm.NewSoftwareBackend(hsm.SoftwareConfig{
+		Path:       t.TempDir(),
+		Namespace:  "software",
+		Password:   "test-password",
+		AutoCreate: true,
+	})
 	if err != nil {
 		t.Fatalf("new software backend: %v", err)
 	}

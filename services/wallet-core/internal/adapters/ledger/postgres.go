@@ -1245,6 +1245,270 @@ WHERE tenant_id=$3 AND sweep_order_id=$4 AND status <> 'DONE'
 	return err
 }
 
+func (l *PostgresLedger) ReserveTreasuryTransfer(ctx context.Context, in ports.TreasuryTransferReserveInput) error {
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	requiredConfs := in.RequiredConfirmations
+	if requiredConfs <= 0 {
+		requiredConfs = 1
+	}
+
+	var existingStatus string
+	err = tx.QueryRowContext(ctx, `
+SELECT status
+FROM treasury_transfer_orders
+WHERE tenant_id=$1 AND transfer_order_id=$2
+FOR UPDATE
+`, in.TenantID, in.TransferOrderID).Scan(&existingStatus)
+	if err == nil {
+		switch strings.ToUpper(strings.TrimSpace(existingStatus)) {
+		case "RESERVED", "BROADCASTED", "DONE":
+			return tx.Commit()
+		default:
+			return fmt.Errorf("treasury transfer already exists with status=%s", existingStatus)
+		}
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+
+	sourceBal, err := l.getVaultBalanceTx(ctx, tx, in.TenantID, in.FromAccountID, in.Asset)
+	if err != nil {
+		return err
+	}
+	nextSourceAvail, err := subDecimalString(sourceBal.Available, in.Amount)
+	if err != nil {
+		return err
+	}
+	if err := l.upsertVaultBalanceTx(ctx, tx, in.TenantID, in.FromAccountID, in.Asset, nextSourceAvail); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO treasury_transfer_orders (
+  tenant_id, transfer_order_id, from_account_id, to_account_id, chain, network, asset, amount,
+  required_confirmations, status, source_tier, destination_tier
+) VALUES (
+  $1,$2,$3,$4,$5,$6,$7,$8,$9,'RESERVED',$10,$11
+)
+ON CONFLICT (tenant_id, transfer_order_id) DO NOTHING
+`, in.TenantID, in.TransferOrderID, in.FromAccountID, in.ToAccountID, in.Chain, in.Network, in.Asset, in.Amount, requiredConfs, strings.TrimSpace(in.SourceTier), strings.TrimSpace(in.DestinationTier)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO vault_journals (tenant_id, biz_type, biz_id, treasury_account_id, asset, entry_side, amount, balance_after)
+VALUES ($1,'TREASURY_TRANSFER',$2,$3,$4,'DEBIT_PENDING',$5,$6)
+ON CONFLICT (tenant_id, biz_type, biz_id, treasury_account_id, entry_side) DO NOTHING
+`, in.TenantID, in.TransferOrderID, in.FromAccountID, in.Asset, in.Amount, nextSourceAvail); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (l *PostgresLedger) MarkTreasuryTransferBroadcasted(ctx context.Context, tenantID, transferOrderID, txHash string, requiredConfs int64) error {
+	if requiredConfs <= 0 {
+		requiredConfs = 1
+	}
+	res, err := l.db.ExecContext(ctx, `
+UPDATE treasury_transfer_orders
+SET status='BROADCASTED', tx_hash=$1, required_confirmations=$2, reason='', updated_at=NOW()
+WHERE tenant_id=$3 AND transfer_order_id=$4 AND status IN ('RESERVED', 'BROADCASTED')
+`, txHash, requiredConfs, tenantID, transferOrderID)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err == nil && rows == 0 {
+		return fmt.Errorf("treasury transfer not reserved")
+	}
+	return nil
+}
+
+func (l *PostgresLedger) ConfirmTreasuryTransferOnChain(ctx context.Context, in ports.TreasuryTransferConfirmInput) error {
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var (
+		toAccountID   string
+		fromAccountID string
+		asset         string
+		amount        string
+		status        string
+		oldConfirms   int64
+		reqConfs      int64
+	)
+	err = tx.QueryRowContext(ctx, `
+SELECT to_account_id, from_account_id, asset, amount, status, confirmations, required_confirmations
+FROM treasury_transfer_orders
+WHERE tenant_id=$1 AND transfer_order_id=$2
+FOR UPDATE
+`, in.TenantID, in.TransferOrderID).Scan(&toAccountID, &fromAccountID, &asset, &amount, &status, &oldConfirms, &reqConfs)
+	if err != nil {
+		return err
+	}
+	if in.RequiredConfs <= 0 {
+		in.RequiredConfs = reqConfs
+	}
+	if in.RequiredConfs <= 0 {
+		in.RequiredConfs = 1
+	}
+	if in.Confirmations < oldConfirms {
+		in.Confirmations = oldConfirms
+	}
+	if status == "DONE" {
+		_, err := tx.ExecContext(ctx, `
+UPDATE treasury_transfer_orders
+SET confirmations=GREATEST(confirmations,$1), required_confirmations=$2, updated_at=NOW()
+WHERE tenant_id=$3 AND transfer_order_id=$4
+`, in.Confirmations, in.RequiredConfs, in.TenantID, in.TransferOrderID)
+		if err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	if status != "BROADCASTED" && status != "RESERVED" {
+		return fmt.Errorf("treasury transfer status invalid for onchain confirm: %s", status)
+	}
+	if in.Confirmations < in.RequiredConfs {
+		_, err := tx.ExecContext(ctx, `
+UPDATE treasury_transfer_orders
+SET status='BROADCASTED', tx_hash=$1, confirmations=GREATEST(confirmations,$2), required_confirmations=$3, updated_at=NOW()
+WHERE tenant_id=$4 AND transfer_order_id=$5
+`, in.TxHash, in.Confirmations, in.RequiredConfs, in.TenantID, in.TransferOrderID)
+		if err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+
+	destinationBal, err := l.getVaultBalanceTx(ctx, tx, in.TenantID, toAccountID, asset)
+	if err != nil {
+		return err
+	}
+	sourceBal, err := l.getVaultBalanceTx(ctx, tx, in.TenantID, fromAccountID, asset)
+	if err != nil {
+		return err
+	}
+	nextDestinationAvail, err := addDecimalString(destinationBal.Available, amount)
+	if err != nil {
+		return err
+	}
+	if err := l.upsertVaultBalanceTx(ctx, tx, in.TenantID, toAccountID, asset, nextDestinationAvail); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE treasury_transfer_orders
+SET status='DONE', tx_hash=$1, confirmations=GREATEST(confirmations,$2), required_confirmations=$3, updated_at=NOW()
+WHERE tenant_id=$4 AND transfer_order_id=$5
+`, in.TxHash, in.Confirmations, in.RequiredConfs, in.TenantID, in.TransferOrderID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO vault_journals (tenant_id, biz_type, biz_id, treasury_account_id, asset, entry_side, amount, balance_after)
+VALUES ($1,'TREASURY_TRANSFER',$2,$3,$4,'DEBIT',$5,$6)
+ON CONFLICT (tenant_id, biz_type, biz_id, treasury_account_id, entry_side) DO NOTHING
+`, in.TenantID, in.TransferOrderID, fromAccountID, asset, amount, sourceBal.Available); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO vault_journals (tenant_id, biz_type, biz_id, treasury_account_id, asset, entry_side, amount, balance_after)
+VALUES ($1,'TREASURY_TRANSFER',$2,$3,$4,'CREDIT',$5,$6)
+ON CONFLICT (tenant_id, biz_type, biz_id, treasury_account_id, entry_side) DO NOTHING
+`, in.TenantID, in.TransferOrderID, toAccountID, asset, amount, nextDestinationAvail); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (l *PostgresLedger) FailTreasuryTransferOnChain(ctx context.Context, tenantID, transferOrderID, reason string, confirmations int64) error {
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var (
+		fromAccountID string
+		asset         string
+		amount        string
+		status        string
+	)
+	err = tx.QueryRowContext(ctx, `
+SELECT from_account_id, asset, amount, status
+FROM treasury_transfer_orders
+WHERE tenant_id=$1 AND transfer_order_id=$2
+FOR UPDATE
+`, tenantID, transferOrderID).Scan(&fromAccountID, &asset, &amount, &status)
+	if err != nil {
+		return err
+	}
+	switch status {
+	case "FAILED":
+		return tx.Commit()
+	case "DONE":
+		return tx.Commit()
+	case "RESERVED", "BROADCASTED":
+	default:
+		return fmt.Errorf("treasury transfer status invalid for fail: %s", status)
+	}
+	sourceBal, err := l.getVaultBalanceTx(ctx, tx, tenantID, fromAccountID, asset)
+	if err != nil {
+		return err
+	}
+	nextSourceAvail, err := addDecimalString(sourceBal.Available, amount)
+	if err != nil {
+		return err
+	}
+	if err := l.upsertVaultBalanceTx(ctx, tx, tenantID, fromAccountID, asset, nextSourceAvail); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE treasury_transfer_orders
+SET status='FAILED', reason=$1, confirmations=GREATEST(confirmations,$2), updated_at=NOW()
+WHERE tenant_id=$3 AND transfer_order_id=$4
+`, reason, confirmations, tenantID, transferOrderID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO vault_journals (tenant_id, biz_type, biz_id, treasury_account_id, asset, entry_side, amount, balance_after)
+VALUES ($1,'TREASURY_TRANSFER',$2,$3,$4,'ROLLBACK',$5,$6)
+ON CONFLICT (tenant_id, biz_type, biz_id, treasury_account_id, entry_side) DO NOTHING
+`, tenantID, transferOrderID, fromAccountID, asset, amount, nextSourceAvail); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (l *PostgresLedger) GetTreasuryTransferStatus(ctx context.Context, tenantID, transferOrderID string) (ports.TreasuryTransferStatus, error) {
+	var out ports.TreasuryTransferStatus
+	err := l.db.QueryRowContext(ctx, `
+SELECT status, tx_hash, reason, amount, from_account_id, to_account_id, source_tier, destination_tier, confirmations, required_confirmations
+FROM treasury_transfer_orders
+WHERE tenant_id=$1 AND transfer_order_id=$2
+`, tenantID, transferOrderID).Scan(
+		&out.Status,
+		&out.TxHash,
+		&out.Reason,
+		&out.Amount,
+		&out.FromAccountID,
+		&out.ToAccountID,
+		&out.SourceTier,
+		&out.DestinationTier,
+		&out.Confirmations,
+		&out.RequiredConfs,
+	)
+	if err != nil {
+		return ports.TreasuryTransferStatus{}, err
+	}
+	return out, nil
+}
+
 func (l *PostgresLedger) GetBalance(ctx context.Context, tenantID, accountID, asset string) (ports.BalanceSnapshot, error) {
 	var out ports.BalanceSnapshot
 	err := l.db.QueryRowContext(ctx, `
@@ -1513,6 +1777,27 @@ id BIGSERIAL PRIMARY KEY,
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	UNIQUE (tenant_id, sweep_order_id)
 );`,
+		`CREATE TABLE IF NOT EXISTS treasury_transfer_orders (
+id BIGSERIAL PRIMARY KEY,
+tenant_id TEXT NOT NULL,
+transfer_order_id TEXT NOT NULL,
+from_account_id TEXT NOT NULL,
+to_account_id TEXT NOT NULL,
+chain TEXT NOT NULL DEFAULT '',
+network TEXT NOT NULL,
+asset TEXT NOT NULL,
+amount TEXT NOT NULL,
+tx_hash TEXT NOT NULL DEFAULT '',
+reason TEXT NOT NULL DEFAULT '',
+confirmations BIGINT NOT NULL DEFAULT 0,
+required_confirmations BIGINT NOT NULL DEFAULT 1,
+source_tier TEXT NOT NULL DEFAULT 'HOT',
+destination_tier TEXT NOT NULL DEFAULT 'COLD',
+status TEXT NOT NULL,
+created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+UNIQUE (tenant_id, transfer_order_id)
+);`,
 		`CREATE TABLE IF NOT EXISTS vault_balances (
 tenant_id TEXT NOT NULL,
 account_id TEXT NOT NULL,
@@ -1570,6 +1855,15 @@ UNIQUE (tenant_id, biz_type, biz_id, treasury_account_id, entry_side)
 		`ALTER TABLE sweep_orders ADD COLUMN IF NOT EXISTS confirmations BIGINT NOT NULL DEFAULT 0;`,
 		`ALTER TABLE sweep_orders ADD COLUMN IF NOT EXISTS required_confirmations BIGINT NOT NULL DEFAULT 1;`,
 		`ALTER TABLE sweep_orders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();`,
+		`ALTER TABLE treasury_transfer_orders ADD COLUMN IF NOT EXISTS chain TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE treasury_transfer_orders ADD COLUMN IF NOT EXISTS network TEXT NOT NULL DEFAULT 'unknown';`,
+		`ALTER TABLE treasury_transfer_orders ADD COLUMN IF NOT EXISTS tx_hash TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE treasury_transfer_orders ADD COLUMN IF NOT EXISTS reason TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE treasury_transfer_orders ADD COLUMN IF NOT EXISTS confirmations BIGINT NOT NULL DEFAULT 0;`,
+		`ALTER TABLE treasury_transfer_orders ADD COLUMN IF NOT EXISTS required_confirmations BIGINT NOT NULL DEFAULT 1;`,
+		`ALTER TABLE treasury_transfer_orders ADD COLUMN IF NOT EXISTS source_tier TEXT NOT NULL DEFAULT 'HOT';`,
+		`ALTER TABLE treasury_transfer_orders ADD COLUMN IF NOT EXISTS destination_tier TEXT NOT NULL DEFAULT 'COLD';`,
+		`ALTER TABLE treasury_transfer_orders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();`,
 	}
 	for _, stmt := range alterStmts {
 		if _, err := l.db.ExecContext(ctx, stmt); err != nil {
@@ -1579,15 +1873,18 @@ UNIQUE (tenant_id, biz_type, biz_id, treasury_account_id, entry_side)
 	_, _ = l.db.ExecContext(ctx, `UPDATE ledger_freezes SET network='unknown' WHERE network='' OR network IS NULL`)
 	_, _ = l.db.ExecContext(ctx, `UPDATE deposit_events SET network='unknown' WHERE network='' OR network IS NULL`)
 	_, _ = l.db.ExecContext(ctx, `UPDATE sweep_orders SET network='unknown' WHERE network='' OR network IS NULL`)
+	_, _ = l.db.ExecContext(ctx, `UPDATE treasury_transfer_orders SET network='unknown' WHERE network='' OR network IS NULL`)
 	_, _ = l.db.ExecContext(ctx, `UPDATE withdraw_jobs SET network='unknown' WHERE network='' OR network IS NULL`)
 	_, _ = l.db.ExecContext(ctx, `UPDATE withdraw_jobs SET next_retry_at=NOW() WHERE next_retry_at IS NULL`)
 	_, _ = l.db.ExecContext(ctx, `ALTER TABLE ledger_freezes ALTER COLUMN network DROP DEFAULT`)
 	_, _ = l.db.ExecContext(ctx, `ALTER TABLE deposit_events ALTER COLUMN network DROP DEFAULT`)
 	_, _ = l.db.ExecContext(ctx, `ALTER TABLE sweep_orders ALTER COLUMN network DROP DEFAULT`)
+	_, _ = l.db.ExecContext(ctx, `ALTER TABLE treasury_transfer_orders ALTER COLUMN network DROP DEFAULT`)
 	_, _ = l.db.ExecContext(ctx, `ALTER TABLE withdraw_jobs ALTER COLUMN network DROP DEFAULT`)
 	_, _ = l.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_withdraw_jobs_status_retry ON withdraw_jobs (status, next_retry_at, created_at, id)`)
 	_, _ = l.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_withdraw_jobs_sender_status ON withdraw_jobs (tenant_id, chain, network, from_address, status, created_at, id)`)
 	_, _ = l.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_withdraw_attempts_order_status ON withdraw_tx_attempts (tenant_id, order_id, status, updated_at, id)`)
+	_, _ = l.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_treasury_transfer_status ON treasury_transfer_orders (status, updated_at, id)`)
 	return nil
 }
 

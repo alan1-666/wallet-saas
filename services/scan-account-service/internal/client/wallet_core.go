@@ -39,6 +39,8 @@ type SweepRunRequest struct {
 	SweepOrderID      string `json:"sweep_order_id"`
 	FromAccountID     string `json:"from_account_id"`
 	TreasuryAccountID string `json:"treasury_account_id"`
+	ColdAccountID     string `json:"cold_account_id"`
+	HotBalanceCap     string `json:"hot_balance_cap"`
 	Chain             string `json:"chain"`
 	Network           string `json:"network"`
 	Asset             string `json:"asset"`
@@ -63,6 +65,16 @@ type SweepOnchainNotifyRequest struct {
 	Reason        string `json:"reason"`
 	Confirmations int64  `json:"confirmations"`
 	RequiredConfs int64  `json:"required_confirmations"`
+}
+
+type TreasuryTransferOnchainNotifyRequest struct {
+	TenantID        string `json:"tenant_id"`
+	TransferOrderID string `json:"transfer_order_id"`
+	TxHash          string `json:"tx_hash"`
+	Status          string `json:"status"`
+	Reason          string `json:"reason"`
+	Confirmations   int64  `json:"confirmations"`
+	RequiredConfs   int64  `json:"required_confirmations"`
 }
 
 func NewWalletCore(baseURL, token string, timeout time.Duration) *WalletCore {
@@ -92,6 +104,10 @@ func (w *WalletCore) WithdrawOnchainNotify(ctx context.Context, requestID string
 
 func (w *WalletCore) SweepOnchainNotify(ctx context.Context, requestID string, req SweepOnchainNotifyRequest) error {
 	return w.postJSON(ctx, "/v1/sweep/onchain/notify", requestID, req)
+}
+
+func (w *WalletCore) TreasuryTransferOnchainNotify(ctx context.Context, requestID string, req TreasuryTransferOnchainNotifyRequest) error {
+	return w.postJSON(ctx, "/v1/treasury/onchain/notify", requestID, req)
 }
 
 func (w *WalletCore) postJSON(ctx context.Context, path, requestID string, body any) error {

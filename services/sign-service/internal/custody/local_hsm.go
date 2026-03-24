@@ -72,31 +72,5 @@ func (h *LocalHSM) SignMessage(tenantID string, ref hd.KeyRef, messageHash strin
 }
 
 func (h *LocalHSM) slotID(tenantID, signType string) string {
-	tenantID = sanitizeSlotPart(tenantID)
-	if tenantID == "" {
-		tenantID = "default"
-	}
-	return strings.TrimSpace(h.slotPrefix) + ":" + tenantID + ":" + strings.TrimSpace(signType)
-}
-
-func sanitizeSlotPart(v string) string {
-	v = strings.ToLower(strings.TrimSpace(v))
-	if v == "" {
-		return ""
-	}
-	var b strings.Builder
-	b.Grow(len(v))
-	for _, r := range v {
-		switch {
-		case r >= 'a' && r <= 'z':
-			b.WriteRune(r)
-		case r >= '0' && r <= '9':
-			b.WriteRune(r)
-		case r == '-', r == '_', r == '.':
-			b.WriteRune(r)
-		default:
-			b.WriteByte('-')
-		}
-	}
-	return strings.Trim(b.String(), "-")
+	return hsm.BuildTenantSlotID(h.slotPrefix, tenantID, signType)
 }

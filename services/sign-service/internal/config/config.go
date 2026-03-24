@@ -9,21 +9,26 @@ import (
 )
 
 type Config struct {
-	GRPCHost             string
-	GRPCPort             int
-	LevelDBPath          string
-	AuthToken            string
-	RateLimitWindow      time.Duration
-	RateLimitMaxRequests int
-	CustodyProvider      string
-	CustodyScheme        string
-	HSMBackend           string
-	HSMSlotPrefix        string
-	CloudHSMClusterID    string
-	CloudHSMRegion       string
-	CloudHSMUser         string
-	CloudHSMPIN          string
-	CloudHSMPKCS11Lib    string
+	GRPCHost                  string
+	GRPCPort                  int
+	LevelDBPath               string
+	AuthToken                 string
+	RateLimitWindow           time.Duration
+	RateLimitMaxRequests      int
+	CustodyProvider           string
+	CustodyScheme             string
+	HSMBackend                string
+	HSMSlotPrefix             string
+	AllowedTenants            []string
+	SoftwareVaultPassword     string
+	SoftwareVaultPasswordFile string
+	SoftwareVaultAutoCreate   bool
+	SoftwareBootstrapFile     string
+	CloudHSMClusterID         string
+	CloudHSMRegion            string
+	CloudHSMUser              string
+	CloudHSMPIN               string
+	CloudHSMPKCS11Lib         string
 }
 
 func Load() Config {
@@ -82,6 +87,17 @@ func Load() Config {
 	if hsmSlotPrefix == "" {
 		hsmSlotPrefix = "master"
 	}
+	allowedTenants := splitCSV(strings.TrimSpace(os.Getenv("SIGN_ALLOWED_TENANTS")))
+	softwareVaultPassword := strings.TrimSpace(os.Getenv("SIGN_SOFTWARE_VAULT_PASSWORD"))
+	softwareVaultPasswordFile := strings.TrimSpace(os.Getenv("SIGN_SOFTWARE_VAULT_PASSWORD_FILE"))
+	softwareBootstrapFile := strings.TrimSpace(os.Getenv("SIGN_SOFTWARE_VAULT_BOOTSTRAP_FILE"))
+	softwareVaultAutoCreate := false
+	if raw := strings.TrimSpace(os.Getenv("SIGN_SOFTWARE_VAULT_AUTO_CREATE")); raw != "" {
+		switch strings.ToLower(raw) {
+		case "1", "true", "yes", "on":
+			softwareVaultAutoCreate = true
+		}
+	}
 
 	cloudHSMClusterID := strings.TrimSpace(os.Getenv("SIGN_CLOUDHSM_CLUSTER_ID"))
 	cloudHSMRegion := strings.TrimSpace(os.Getenv("SIGN_CLOUDHSM_REGION"))
@@ -90,21 +106,26 @@ func Load() Config {
 	cloudHSMPKCS11Lib := strings.TrimSpace(os.Getenv("SIGN_CLOUDHSM_PKCS11_LIB"))
 
 	return Config{
-		GRPCHost:             host,
-		GRPCPort:             port,
-		LevelDBPath:          levelPath,
-		AuthToken:            authToken,
-		RateLimitWindow:      rateLimitWindow,
-		RateLimitMaxRequests: rateLimitMaxRequests,
-		CustodyProvider:      custodyProvider,
-		CustodyScheme:        custodyScheme,
-		HSMBackend:           hsmBackend,
-		HSMSlotPrefix:        hsmSlotPrefix,
-		CloudHSMClusterID:    cloudHSMClusterID,
-		CloudHSMRegion:       cloudHSMRegion,
-		CloudHSMUser:         cloudHSMUser,
-		CloudHSMPIN:          cloudHSMPIN,
-		CloudHSMPKCS11Lib:    cloudHSMPKCS11Lib,
+		GRPCHost:                  host,
+		GRPCPort:                  port,
+		LevelDBPath:               levelPath,
+		AuthToken:                 authToken,
+		RateLimitWindow:           rateLimitWindow,
+		RateLimitMaxRequests:      rateLimitMaxRequests,
+		CustodyProvider:           custodyProvider,
+		CustodyScheme:             custodyScheme,
+		HSMBackend:                hsmBackend,
+		HSMSlotPrefix:             hsmSlotPrefix,
+		AllowedTenants:            allowedTenants,
+		SoftwareVaultPassword:     softwareVaultPassword,
+		SoftwareVaultPasswordFile: softwareVaultPasswordFile,
+		SoftwareVaultAutoCreate:   softwareVaultAutoCreate,
+		SoftwareBootstrapFile:     softwareBootstrapFile,
+		CloudHSMClusterID:         cloudHSMClusterID,
+		CloudHSMRegion:            cloudHSMRegion,
+		CloudHSMUser:              cloudHSMUser,
+		CloudHSMPIN:               cloudHSMPIN,
+		CloudHSMPKCS11Lib:         cloudHSMPKCS11Lib,
 	}
 }
 
@@ -130,4 +151,25 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("unsupported hsm backend: %s", c.HSMBackend)
 	}
+}
+
+func splitCSV(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		item := strings.TrimSpace(part)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
 }

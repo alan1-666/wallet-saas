@@ -4,8 +4,9 @@ import "testing"
 
 func TestValidateAllowsSoftwareBackend(t *testing.T) {
 	cfg := Config{
-		CustodyProvider: "local-hsm",
-		HSMBackend:      "software",
+		CustodyProvider:       "local-hsm",
+		HSMBackend:            "software",
+		SoftwareVaultPassword: "test-password",
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("validate: %v", err)

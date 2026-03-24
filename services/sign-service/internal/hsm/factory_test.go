@@ -7,8 +7,12 @@ import (
 
 func TestNewBackendCreatesSoftwareBackendByDefault(t *testing.T) {
 	backend, err := NewBackend(FactoryConfig{
-		LevelDBPath: t.TempDir(),
-		Namespace:   "software",
+		Software: SoftwareConfig{
+			Path:       t.TempDir(),
+			Namespace:  "software",
+			Password:   "test-password",
+			AutoCreate: true,
+		},
 	})
 	if err != nil {
 		t.Fatalf("new backend: %v", err)

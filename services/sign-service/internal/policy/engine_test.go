@@ -76,3 +76,20 @@ func TestAuthorizeRejectsMissingTenant(t *testing.T) {
 		t.Fatalf("unexpected error code: %v", status.Code(err))
 	}
 }
+
+func TestAuthorizeRejectsTenantOutsideAllowlist(t *testing.T) {
+	engine := New(Config{
+		AuthToken:            "token-123",
+		RateLimitWindow:      time.Minute,
+		RateLimitMaxRequests: 10,
+		AllowedTenants:       []string{"tenant-a"},
+	})
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer token-123", "x-tenant-id", "tenant-b"))
+	_, err := engine.Authorize(ctx, "sign", "ecdsa", "hd:ecdsa:ethereum:12:0:7")
+	if err == nil {
+		t.Fatalf("expected allowlist failure")
+	}
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("unexpected error code: %v", status.Code(err))
+	}
+}

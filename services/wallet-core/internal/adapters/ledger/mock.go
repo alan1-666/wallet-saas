@@ -85,6 +85,26 @@ func (m *MockLedger) FailSweepOnChain(_ context.Context, _, _, _ string, _ int64
 	return nil
 }
 
+func (m *MockLedger) ReserveTreasuryTransfer(_ context.Context, _ ports.TreasuryTransferReserveInput) error {
+	return nil
+}
+
+func (m *MockLedger) MarkTreasuryTransferBroadcasted(_ context.Context, _, _, _ string, _ int64) error {
+	return nil
+}
+
+func (m *MockLedger) ConfirmTreasuryTransferOnChain(_ context.Context, _ ports.TreasuryTransferConfirmInput) error {
+	return nil
+}
+
+func (m *MockLedger) FailTreasuryTransferOnChain(_ context.Context, _, _, _ string, _ int64) error {
+	return nil
+}
+
+func (m *MockLedger) GetTreasuryTransferStatus(_ context.Context, _, _ string) (ports.TreasuryTransferStatus, error) {
+	return ports.TreasuryTransferStatus{Status: "MOCK"}, nil
+}
+
 func (m *MockLedger) GetBalance(_ context.Context, _, _, _ string) (ports.BalanceSnapshot, error) {
 	return ports.BalanceSnapshot{Available: "0", Frozen: "0", WithdrawLocked: "0", Withdrawable: "0"}, nil
 }

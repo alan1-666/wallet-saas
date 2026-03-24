@@ -2,6 +2,8 @@ package httptransport
 
 import (
 	"encoding/json"
+	"fmt"
+	"math/big"
 	"net/http"
 	"strings"
 
@@ -77,6 +79,11 @@ func (h *WithdrawHandler) SweepRun(w http.ResponseWriter, r *http.Request) {
 	if req.TreasuryAccountID != req.FromAccountID && !h.ensureAccountActive(w, r, req.TenantID, req.TreasuryAccountID, "sweep_run") {
 		return
 	}
+	if strings.TrimSpace(req.ColdAccountID) != "" && req.ColdAccountID != req.FromAccountID && req.ColdAccountID != req.TreasuryAccountID {
+		if !h.ensureAccountActive(w, r, req.TenantID, req.ColdAccountID, "sweep_run") {
+			return
+		}
+	}
 	requiredConfs := int64(1)
 	if h.Registry != nil {
 		policy, err := h.Registry.GetChainPolicy(r.Context(), req.Chain, req.Network)
@@ -102,13 +109,18 @@ func (h *WithdrawHandler) SweepRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	treasuryAddr, err := h.findAccountAddress(r.Context(), req.TenantID, req.TreasuryAccountID, req.Chain, req.Network, req.Asset)
+	destinationAccountID, destinationTier, err := h.resolveSweepDestinationAccount(r, req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	treasuryAddr, err := h.findAccountAddress(r.Context(), req.TenantID, destinationAccountID, req.Chain, req.Network, req.Asset)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	txHash, err := h.Orchestrator.CreateAndBroadcast(r.Context(), orchestrator.WithdrawRequest{
+	broadcast, err := h.Orchestrator.BroadcastOnly(r.Context(), orchestrator.WithdrawRequest{
 		TenantID:      req.TenantID,
 		AccountID:     req.FromAccountID,
 		OrderID:       req.SweepOrderID,
@@ -135,13 +147,13 @@ func (h *WithdrawHandler) SweepRun(w http.ResponseWriter, r *http.Request) {
 	err = h.Ledger.StartSweep(r.Context(), ports.SweepCollectInput{
 		TenantID:          req.TenantID,
 		FromAccountID:     req.FromAccountID,
-		TreasuryAccountID: req.TreasuryAccountID,
+		TreasuryAccountID: destinationAccountID,
 		SweepOrderID:      req.SweepOrderID,
 		Chain:             req.Chain,
 		Network:           req.Network,
 		Asset:             req.Asset,
 		Amount:            req.Amount,
-		TxHash:            txHash,
+		TxHash:            broadcast.TxHash,
 		RequiredConfs:     requiredConfs,
 	})
 	if err != nil {
@@ -149,7 +161,7 @@ func (h *WithdrawHandler) SweepRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(SweepRunResponse{Status: "BROADCASTED", TxHash: txHash})
+	_ = json.NewEncoder(w).Encode(SweepRunResponse{Status: "BROADCASTED", TxHash: broadcast.TxHash, DestinationAccountID: destinationAccountID, DestinationTier: destinationTier})
 }
 
 func (h *WithdrawHandler) SweepOnchainNotify(w http.ResponseWriter, r *http.Request) {
@@ -195,4 +207,90 @@ func (h *WithdrawHandler) SweepOnchainNotify(w http.ResponseWriter, r *http.Requ
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
+}
+
+func (h *WithdrawHandler) resolveSweepDestinationAccount(r *http.Request, req SweepRunRequest) (string, string, error) {
+	hotAccountID := strings.TrimSpace(req.TreasuryAccountID)
+	if hotAccountID == "" {
+		hotAccountID = "treasury-main"
+	}
+	coldAccountID := strings.TrimSpace(req.ColdAccountID)
+	hotBalanceCap := strings.TrimSpace(req.HotBalanceCap)
+	if coldAccountID == "" || hotBalanceCap == "" || hotBalanceCap == "0" || h.Ledger == nil {
+		return hotAccountID, "HOT", nil
+	}
+
+	currentHotVault, err := h.getVaultAvailable(r, req.TenantID, hotAccountID, req.Asset)
+	if err != nil {
+		return "", "", err
+	}
+	projectedHotVault, err := addIntegerStrings(currentHotVault, req.Amount)
+	if err != nil {
+		return "", "", err
+	}
+	if compareIntegerStrings(projectedHotVault, hotBalanceCap) > 0 {
+		return coldAccountID, "COLD", nil
+	}
+	return hotAccountID, "HOT", nil
+}
+
+func (h *WithdrawHandler) getVaultAvailable(r *http.Request, tenantID, accountID, asset string) (string, error) {
+	items, err := h.Ledger.ListAccountAssets(r.Context(), tenantID, accountID)
+	if err != nil {
+		return "", err
+	}
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item.Asset), strings.TrimSpace(asset)) {
+			if strings.TrimSpace(item.VaultAvailable) == "" {
+				return "0", nil
+			}
+			return strings.TrimSpace(item.VaultAvailable), nil
+		}
+	}
+	return "0", nil
+}
+
+func addIntegerStrings(a, b string) (string, error) {
+	aa, ok := new(big.Int).SetString(strings.TrimSpace(a), 10)
+	if !ok {
+		return "", fmt.Errorf("invalid integer amount: %s", a)
+	}
+	bb, ok := new(big.Int).SetString(strings.TrimSpace(b), 10)
+	if !ok {
+		return "", fmt.Errorf("invalid integer amount: %s", b)
+	}
+	if aa.Sign() < 0 || bb.Sign() < 0 {
+		return "", fmt.Errorf("negative amount not allowed")
+	}
+	return new(big.Int).Add(aa, bb).String(), nil
+}
+
+func subIntegerStrings(a, b string) (string, error) {
+	aa, ok := new(big.Int).SetString(strings.TrimSpace(a), 10)
+	if !ok {
+		return "", fmt.Errorf("invalid integer amount: %s", a)
+	}
+	bb, ok := new(big.Int).SetString(strings.TrimSpace(b), 10)
+	if !ok {
+		return "", fmt.Errorf("invalid integer amount: %s", b)
+	}
+	if aa.Sign() < 0 || bb.Sign() < 0 {
+		return "", fmt.Errorf("negative amount not allowed")
+	}
+	if aa.Cmp(bb) < 0 {
+		return "", fmt.Errorf("insufficient balance")
+	}
+	return new(big.Int).Sub(aa, bb).String(), nil
+}
+
+func compareIntegerStrings(a, b string) int {
+	aa, ok := new(big.Int).SetString(strings.TrimSpace(a), 10)
+	if !ok {
+		return 0
+	}
+	bb, ok := new(big.Int).SetString(strings.TrimSpace(b), 10)
+	if !ok {
+		return 0
+	}
+	return aa.Cmp(bb)
 }

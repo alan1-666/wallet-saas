@@ -25,8 +25,10 @@ type WatchAddress struct {
 	MinConfirmations    int64
 	UnlockConfirmations int64
 	TreasuryAccountID   string
+	ColdAccountID       string
 	AutoSweep           bool
 	SweepThreshold      string
+	HotBalanceCap       string
 }
 
 type PendingWithdraw struct {
@@ -50,6 +52,17 @@ type PendingSweep struct {
 	Confirmations int64
 	RequiredConfs int64
 	BroadcastedAt time.Time
+}
+
+type PendingTreasuryTransfer struct {
+	TenantID        string
+	TransferOrderID string
+	Chain           string
+	Network         string
+	TxHash          string
+	Confirmations   int64
+	RequiredConfs   int64
+	BroadcastedAt   time.Time
 }
 
 type SeenEventChange struct {
@@ -80,7 +93,9 @@ type ReorgCandidate struct {
 	MinConfirmations    int64
 	UnlockConfirmations int64
 	TreasuryAccountID   string
+	ColdAccountID       string
 	SweepThreshold      string
+	HotBalanceCap       string
 }
 
 type OutboxEvent struct {
@@ -121,7 +136,7 @@ func (p *Postgres) Close() error {
 
 func (p *Postgres) ListWatchAddresses(ctx context.Context, model string, limit int) ([]WatchAddress, error) {
 	const queryWithRegistry = `
-SELECT sw.tenant_id, sw.account_id, sw.model, sw.chain, sw.coin, sw.network, sw.address, sw.min_confirmations, sw.unlock_confirmations, sw.treasury_account_id, sw.auto_sweep, sw.sweep_threshold
+SELECT sw.tenant_id, sw.account_id, sw.model, sw.chain, sw.coin, sw.network, sw.address, sw.min_confirmations, sw.unlock_confirmations, sw.treasury_account_id, sw.cold_account_id, sw.auto_sweep, sw.sweep_threshold, sw.hot_balance_cap
 FROM scan_watch_addresses sw
 WHERE sw.active = TRUE
   AND sw.model = $1
@@ -142,7 +157,7 @@ ORDER BY sw.id ASC
 LIMIT $2
 `
 	const queryFallback = `
-SELECT tenant_id, account_id, model, chain, coin, network, address, min_confirmations, unlock_confirmations, treasury_account_id, auto_sweep, sweep_threshold
+SELECT tenant_id, account_id, model, chain, coin, network, address, min_confirmations, unlock_confirmations, treasury_account_id, cold_account_id, auto_sweep, sweep_threshold, hot_balance_cap
 FROM scan_watch_addresses
 WHERE active = TRUE
   AND model = $1
@@ -161,7 +176,7 @@ LIMIT $2
 	out := make([]WatchAddress, 0, limit)
 	for rows.Next() {
 		var w WatchAddress
-		if err := rows.Scan(&w.TenantID, &w.AccountID, &w.Model, &w.Chain, &w.Coin, &w.Network, &w.Address, &w.MinConfirmations, &w.UnlockConfirmations, &w.TreasuryAccountID, &w.AutoSweep, &w.SweepThreshold); err != nil {
+		if err := rows.Scan(&w.TenantID, &w.AccountID, &w.Model, &w.Chain, &w.Coin, &w.Network, &w.Address, &w.MinConfirmations, &w.UnlockConfirmations, &w.TreasuryAccountID, &w.ColdAccountID, &w.AutoSweep, &w.SweepThreshold, &w.HotBalanceCap); err != nil {
 			return nil, err
 		}
 		out = append(out, w)
@@ -385,7 +400,9 @@ SELECT
   COALESCE(sw.min_confirmations, 1) AS min_confirmations,
   COALESCE(sw.unlock_confirmations, GREATEST(COALESCE(sw.min_confirmations, 1), 1)) AS unlock_confirmations,
   COALESCE(sw.treasury_account_id, 'treasury-main') AS treasury_account_id,
-  COALESCE(sw.sweep_threshold, '0') AS sweep_threshold
+  COALESCE(sw.cold_account_id, '') AS cold_account_id,
+  COALESCE(sw.sweep_threshold, '0') AS sweep_threshold,
+  COALESCE(sw.hot_balance_cap, '0') AS hot_balance_cap
 FROM scan_seen_events se
 LEFT JOIN scan_watch_addresses sw
   ON sw.tenant_id = se.tenant_id
@@ -429,7 +446,9 @@ LIMIT $2
 			&item.MinConfirmations,
 			&item.UnlockConfirmations,
 			&item.TreasuryAccountID,
+			&item.ColdAccountID,
 			&item.SweepThreshold,
+			&item.HotBalanceCap,
 		); err != nil {
 			return nil, err
 		}
@@ -668,6 +687,30 @@ LIMIT $1
 	return out, rows.Err()
 }
 
+func (p *Postgres) ListPendingTreasuryTransfers(ctx context.Context, limit int) ([]PendingTreasuryTransfer, error) {
+	rows, err := p.db.QueryContext(ctx, `
+SELECT tenant_id, transfer_order_id, chain, network, tx_hash, confirmations, required_confirmations, updated_at
+FROM treasury_transfer_orders
+WHERE status='BROADCASTED'
+  AND tx_hash <> ''
+ORDER BY updated_at ASC
+LIMIT $1
+`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]PendingTreasuryTransfer, 0, limit)
+	for rows.Next() {
+		var it PendingTreasuryTransfer
+		if err := rows.Scan(&it.TenantID, &it.TransferOrderID, &it.Chain, &it.Network, &it.TxHash, &it.Confirmations, &it.RequiredConfs, &it.BroadcastedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
 func (p *Postgres) IncrementOutgoingNotFound(ctx context.Context, kind, tenantID, orderID, chain, network, txHash string) (OutgoingNotFoundState, error) {
 	var out OutgoingNotFoundState
 	err := p.db.QueryRowContext(ctx, `
@@ -711,8 +754,10 @@ func (p *Postgres) initSchema(ctx context.Context) error {
   min_confirmations BIGINT NOT NULL DEFAULT 1,
   unlock_confirmations BIGINT NOT NULL DEFAULT 1,
   treasury_account_id TEXT NOT NULL DEFAULT 'treasury-main',
+  cold_account_id TEXT NOT NULL DEFAULT '',
   auto_sweep BOOLEAN NOT NULL DEFAULT FALSE,
   sweep_threshold TEXT NOT NULL DEFAULT '0',
+  hot_balance_cap TEXT NOT NULL DEFAULT '0',
   active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -815,6 +860,8 @@ func (p *Postgres) initSchema(ctx context.Context) error {
 		`ALTER TABLE scan_watch_addresses ADD COLUMN IF NOT EXISTS model TEXT NOT NULL DEFAULT 'account'`,
 		`ALTER TABLE scan_watch_addresses ADD COLUMN IF NOT EXISTS network TEXT NOT NULL DEFAULT 'unknown'`,
 		`ALTER TABLE scan_watch_addresses ADD COLUMN IF NOT EXISTS unlock_confirmations BIGINT NOT NULL DEFAULT 1`,
+		`ALTER TABLE scan_watch_addresses ADD COLUMN IF NOT EXISTS cold_account_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE scan_watch_addresses ADD COLUMN IF NOT EXISTS hot_balance_cap TEXT NOT NULL DEFAULT '0'`,
 		`ALTER TABLE scan_watch_addresses ALTER COLUMN auto_sweep SET DEFAULT FALSE`,
 		`ALTER TABLE scan_seen_events ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'PENDING'`,
 		`ALTER TABLE scan_seen_events ADD COLUMN IF NOT EXISTS confirmations BIGINT NOT NULL DEFAULT 0`,

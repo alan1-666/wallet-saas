@@ -28,7 +28,7 @@ func (s *Scanner) scanOutgoingConfirmations(ctx context.Context) error {
 			if strings.EqualFold(strings.TrimSpace(it.AttemptStatus), "REPLACED") {
 				continue
 			}
-			if err := s.handleMissingOutgoingTx(ctx, outgoingKindWithdraw, it.TenantID, it.OrderID, it.Chain, it.Network, it.TxHash, it.RequiredConfs, it.BroadcastedAt, false); err != nil {
+			if err := s.handleMissingOutgoingTx(ctx, outgoingKindWithdraw, it.TenantID, it.OrderID, it.Chain, it.Network, it.TxHash, it.RequiredConfs, it.BroadcastedAt); err != nil {
 				log.Printf("withdraw missing tx handling failed tenant=%s order=%s tx=%s err=%v", it.TenantID, it.OrderID, it.TxHash, err)
 			}
 			continue
@@ -78,7 +78,7 @@ func (s *Scanner) scanOutgoingConfirmations(ctx context.Context) error {
 			continue
 		}
 		if !finality.Found {
-			if err := s.handleMissingOutgoingTx(ctx, outgoingKindSweep, it.TenantID, it.SweepOrderID, it.Chain, it.Network, it.TxHash, it.RequiredConfs, it.BroadcastedAt, true); err != nil {
+			if err := s.handleMissingOutgoingTx(ctx, outgoingKindSweep, it.TenantID, it.SweepOrderID, it.Chain, it.Network, it.TxHash, it.RequiredConfs, it.BroadcastedAt); err != nil {
 				log.Printf("sweep missing tx handling failed tenant=%s order=%s tx=%s err=%v", it.TenantID, it.SweepOrderID, it.TxHash, err)
 			}
 			continue
@@ -110,15 +110,63 @@ func (s *Scanner) scanOutgoingConfirmations(ctx context.Context) error {
 		}
 		log.Printf("sweep onchain notified tenant=%s order=%s tx=%s status=%s conf=%d", it.TenantID, it.SweepOrderID, it.TxHash, status, finality.Confirmations)
 	}
+
+	transfers, err := s.Store.ListPendingTreasuryTransfers(ctx, s.WatchLimit)
+	if err != nil {
+		return err
+	}
+	for _, it := range transfers {
+		if strings.TrimSpace(it.Network) == "" {
+			log.Printf("skip treasury transfer onchain check tenant=%s order=%s tx=%s reason=missing_network", it.TenantID, it.TransferOrderID, it.TxHash)
+			continue
+		}
+		finality, err := s.ChainGateway.TxFinality(ctx, it.Chain, "", it.Network, it.TxHash)
+		if err != nil {
+			continue
+		}
+		if !finality.Found {
+			if err := s.handleMissingOutgoingTx(ctx, outgoingKindTreasuryTransfer, it.TenantID, it.TransferOrderID, it.Chain, it.Network, it.TxHash, it.RequiredConfs, it.BroadcastedAt); err != nil {
+				log.Printf("treasury transfer missing tx handling failed tenant=%s order=%s tx=%s err=%v", it.TenantID, it.TransferOrderID, it.TxHash, err)
+			}
+			continue
+		}
+		_ = s.Store.ClearOutgoingNotFound(ctx, outgoingKindTreasuryTransfer, it.TenantID, it.TransferOrderID, it.TxHash)
+		status := "CONFIRMED"
+		reason := ""
+		switch strings.ToUpper(strings.TrimSpace(finality.Status)) {
+		case "REVERTED", "FAILED":
+			status = "FAILED"
+			reason = "onchain tx reverted"
+		case "PENDING":
+			continue
+		default:
+			status = "CONFIRMED"
+		}
+		reqID := fmt.Sprintf("scan-treasury-onchain-%s-%s-%d", it.TenantID, it.TransferOrderID, finality.Confirmations)
+		if err := s.WalletCore.TreasuryTransferOnchainNotify(ctx, reqID, client.TreasuryTransferOnchainNotifyRequest{
+			TenantID:        it.TenantID,
+			TransferOrderID: it.TransferOrderID,
+			TxHash:          it.TxHash,
+			Status:          status,
+			Reason:          reason,
+			Confirmations:   finality.Confirmations,
+			RequiredConfs:   max(it.RequiredConfs, 1),
+		}); err != nil {
+			log.Printf("treasury transfer onchain notify failed tenant=%s order=%s tx=%s err=%v", it.TenantID, it.TransferOrderID, it.TxHash, err)
+			continue
+		}
+		log.Printf("treasury transfer onchain notified tenant=%s order=%s tx=%s status=%s conf=%d", it.TenantID, it.TransferOrderID, it.TxHash, status, finality.Confirmations)
+	}
 	return nil
 }
 
 const (
-	outgoingKindWithdraw = "withdraw"
-	outgoingKindSweep    = "sweep"
+	outgoingKindWithdraw         = "withdraw"
+	outgoingKindSweep            = "sweep"
+	outgoingKindTreasuryTransfer = "treasury_transfer"
 )
 
-func (s *Scanner) handleMissingOutgoingTx(ctx context.Context, kind, tenantID, orderID, chain, network, txHash string, requiredConfs int64, broadcastedAt time.Time, sweep bool) error {
+func (s *Scanner) handleMissingOutgoingTx(ctx context.Context, kind, tenantID, orderID, chain, network, txHash string, requiredConfs int64, broadcastedAt time.Time) error {
 	state, err := s.Store.IncrementOutgoingNotFound(ctx, kind, tenantID, orderID, chain, network, txHash)
 	if err != nil {
 		return err
@@ -131,7 +179,8 @@ func (s *Scanner) handleMissingOutgoingTx(ctx context.Context, kind, tenantID, o
 	}
 	reason := fmt.Sprintf("onchain tx not found after %d checks and %s since broadcast", state.NotFoundCount, age.Round(time.Second))
 	reqID := fmt.Sprintf("scan-%s-notfound-%s-%s-%d", kind, tenantID, orderID, state.NotFoundCount)
-	if sweep {
+	switch kind {
+	case outgoingKindSweep:
 		if err := s.WalletCore.SweepOnchainNotify(ctx, reqID, client.SweepOnchainNotifyRequest{
 			TenantID:      tenantID,
 			SweepOrderID:  orderID,
@@ -144,7 +193,20 @@ func (s *Scanner) handleMissingOutgoingTx(ctx context.Context, kind, tenantID, o
 			return err
 		}
 		log.Printf("sweep onchain notified tenant=%s order=%s tx=%s status=FAILED reason=%s", tenantID, orderID, txHash, reason)
-	} else {
+	case outgoingKindTreasuryTransfer:
+		if err := s.WalletCore.TreasuryTransferOnchainNotify(ctx, reqID, client.TreasuryTransferOnchainNotifyRequest{
+			TenantID:        tenantID,
+			TransferOrderID: orderID,
+			TxHash:          txHash,
+			Status:          "FAILED",
+			Reason:          reason,
+			Confirmations:   0,
+			RequiredConfs:   max(requiredConfs, 1),
+		}); err != nil {
+			return err
+		}
+		log.Printf("treasury transfer onchain notified tenant=%s order=%s tx=%s status=FAILED reason=%s", tenantID, orderID, txHash, reason)
+	default:
 		if err := s.WalletCore.WithdrawOnchainNotify(ctx, reqID, client.WithdrawOnchainNotifyRequest{
 			TenantID:      tenantID,
 			OrderID:       orderID,

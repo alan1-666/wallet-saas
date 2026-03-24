@@ -19,6 +19,7 @@ type Config struct {
 	AuthToken            string
 	RateLimitWindow      time.Duration
 	RateLimitMaxRequests int
+	AllowedTenants       []string
 }
 
 type Decision struct {
@@ -33,6 +34,7 @@ type Engine struct {
 	authToken            string
 	rateLimitWindow      time.Duration
 	rateLimitMaxRequests int
+	allowedTenants       map[string]struct{}
 
 	mu      sync.Mutex
 	buckets map[string]*bucket
@@ -67,6 +69,7 @@ func New(cfg Config) *Engine {
 		authToken:            strings.TrimSpace(cfg.AuthToken),
 		rateLimitWindow:      window,
 		rateLimitMaxRequests: maxReq,
+		allowedTenants:       makeAllowedTenants(cfg.AllowedTenants),
 		buckets:              make(map[string]*bucket),
 	}
 }
@@ -96,6 +99,12 @@ func (e *Engine) Authorize(ctx context.Context, operation, signType, keyID strin
 		if decision.TenantID == "" {
 			err = status.Error(codes.InvalidArgument, "tenant id is required")
 			return decision, err
+		}
+		if len(e.allowedTenants) > 0 {
+			if _, ok := e.allowedTenants[decision.TenantID]; !ok {
+				err = status.Error(codes.PermissionDenied, "tenant is not allowed by signer policy")
+				return decision, err
+			}
 		}
 		if decision.KeyID == "" {
 			err = status.Error(codes.InvalidArgument, "key_id is required")
@@ -212,4 +221,22 @@ func normalizeSignType(raw string) string {
 	default:
 		return ""
 	}
+}
+
+func makeAllowedTenants(items []string) map[string]struct{} {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		v := strings.TrimSpace(item)
+		if v == "" {
+			continue
+		}
+		out[v] = struct{}{}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

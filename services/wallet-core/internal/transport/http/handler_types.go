@@ -60,6 +60,8 @@ type SweepRunRequest struct {
 	SweepOrderID      string `json:"sweep_order_id"`
 	FromAccountID     string `json:"from_account_id"`
 	TreasuryAccountID string `json:"treasury_account_id"`
+	ColdAccountID     string `json:"cold_account_id"`
+	HotBalanceCap     string `json:"hot_balance_cap"`
 	Chain             string `json:"chain"`
 	Network           string `json:"network"`
 	Asset             string `json:"asset"`
@@ -84,6 +86,29 @@ type SweepOnchainNotifyRequest struct {
 	Reason        string `json:"reason"`
 	Confirmations int64  `json:"confirmations"`
 	RequiredConfs int64  `json:"required_confirmations"`
+}
+
+type TreasuryTransferRequest struct {
+	TenantID        string `json:"tenant_id"`
+	TransferOrderID string `json:"transfer_order_id"`
+	FromAccountID   string `json:"from_account_id"`
+	ToAccountID     string `json:"to_account_id"`
+	Chain           string `json:"chain"`
+	Network         string `json:"network"`
+	Asset           string `json:"asset"`
+	Amount          string `json:"amount"`
+	SourceTier      string `json:"source_tier"`
+	DestinationTier string `json:"destination_tier"`
+}
+
+type TreasuryTransferOnchainNotifyRequest struct {
+	TenantID        string `json:"tenant_id"`
+	TransferOrderID string `json:"transfer_order_id"`
+	TxHash          string `json:"tx_hash"`
+	Status          string `json:"status"`
+	Reason          string `json:"reason"`
+	Confirmations   int64  `json:"confirmations"`
+	RequiredConfs   int64  `json:"required_confirmations"`
 }
 
 type vin struct {
@@ -111,8 +136,38 @@ type WithdrawStatusResponse struct {
 }
 
 type SweepRunResponse struct {
-	Status string `json:"status"`
-	TxHash string `json:"tx_hash,omitempty"`
+	Status               string `json:"status"`
+	TxHash               string `json:"tx_hash,omitempty"`
+	DestinationAccountID string `json:"destination_account_id,omitempty"`
+	DestinationTier      string `json:"destination_tier,omitempty"`
+}
+
+type TreasuryTransferResponse struct {
+	Status          string `json:"status"`
+	TxHash          string `json:"tx_hash,omitempty"`
+	TransferOrderID string `json:"transfer_order_id,omitempty"`
+	SourceTier      string `json:"source_tier,omitempty"`
+	DestinationTier string `json:"destination_tier,omitempty"`
+}
+
+type TreasuryTransferStatusResponse struct {
+	TenantID        string                       `json:"tenant_id"`
+	TransferOrderID string                       `json:"transfer_order_id"`
+	Transfer        ports.TreasuryTransferStatus `json:"transfer"`
+}
+
+type TreasuryWaterlineResponse struct {
+	TenantID                string `json:"tenant_id"`
+	Asset                   string `json:"asset"`
+	HotAccountID            string `json:"hot_account_id"`
+	ColdAccountID           string `json:"cold_account_id"`
+	HotVaultAvailable       string `json:"hot_vault_available"`
+	ColdVaultAvailable      string `json:"cold_vault_available"`
+	HotBalanceCap           string `json:"hot_balance_cap"`
+	HotBalanceFloor         string `json:"hot_balance_floor"`
+	State                   string `json:"state"`
+	RecommendedAction       string `json:"recommended_action"`
+	SuggestedTransferAmount string `json:"suggested_transfer_amount"`
 }
 
 type BalanceResponse struct {
@@ -135,8 +190,10 @@ type CreateAddressRequest struct {
 	SignType          string `json:"sign_type"`
 	MinConfirmations  int64  `json:"min_confirmations"`
 	TreasuryAccountID string `json:"treasury_account_id"`
+	ColdAccountID     string `json:"cold_account_id"`
 	AutoSweep         *bool  `json:"auto_sweep"`
 	SweepThreshold    string `json:"sweep_threshold"`
+	HotBalanceCap     string `json:"hot_balance_cap"`
 	Model             string `json:"model"`
 }
 

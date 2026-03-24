@@ -32,8 +32,10 @@ type DepositOutboxPayload struct {
 	ToAddress      string `json:"to_address"`
 	WatchAddress   string `json:"watch_address"`
 	TreasuryID     string `json:"treasury_account_id"`
+	ColdAccountID  string `json:"cold_account_id"`
 	AutoSweep      bool   `json:"auto_sweep"`
 	SweepThreshold string `json:"sweep_threshold"`
+	HotBalanceCap  string `json:"hot_balance_cap"`
 	Confirmations  int64  `json:"confirmations"`
 	RequiredConfs  int64  `json:"required_confirmations"`
 	UnlockConfs    int64  `json:"unlock_confirmations"`
@@ -48,6 +50,8 @@ type SweepOutboxPayload struct {
 	SweepOrderID      string `json:"sweep_order_id"`
 	FromAccountID     string `json:"from_account_id"`
 	TreasuryAccountID string `json:"treasury_account_id"`
+	ColdAccountID     string `json:"cold_account_id"`
+	HotBalanceCap     string `json:"hot_balance_cap"`
 	Chain             string `json:"chain"`
 	Network           string `json:"network"`
 	Asset             string `json:"asset"`
@@ -179,6 +183,8 @@ func (s *Scanner) handleSweepTriggerOutboxEvent(ctx context.Context, ev store.Ou
 		SweepOrderID:      sweepOrderID(payload.TxHash, payload.EventIndex, payload.AccountID, payload.Network),
 		FromAccountID:     payload.AccountID,
 		TreasuryAccountID: fallback(payload.TreasuryID, "treasury-main"),
+		ColdAccountID:     strings.TrimSpace(payload.ColdAccountID),
+		HotBalanceCap:     strings.TrimSpace(payload.HotBalanceCap),
 		Chain:             payload.Chain,
 		Network:           payload.Network,
 		Asset:             strings.ToUpper(payload.Coin),
@@ -214,6 +220,8 @@ func (s *Scanner) handleSweepOutboxEvent(ctx context.Context, ev store.OutboxEve
 		SweepOrderID:      payload.SweepOrderID,
 		FromAccountID:     payload.FromAccountID,
 		TreasuryAccountID: payload.TreasuryAccountID,
+		ColdAccountID:     payload.ColdAccountID,
+		HotBalanceCap:     payload.HotBalanceCap,
 		Chain:             payload.Chain,
 		Network:           payload.Network,
 		Asset:             payload.Asset,

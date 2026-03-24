@@ -76,6 +76,13 @@ func (o *WithdrawOrchestrator) SpeedUpBroadcasted(ctx context.Context, req Withd
 	return o.buildSignAndBroadcast(ctx, req)
 }
 
+func (o *WithdrawOrchestrator) BroadcastOnly(ctx context.Context, req WithdrawRequest) (BroadcastResult, error) {
+	if err := o.ensureChainFunds(ctx, req); err != nil {
+		return BroadcastResult{}, err
+	}
+	return o.buildSignAndBroadcast(ctx, req)
+}
+
 func (o *WithdrawOrchestrator) buildSignAndBroadcast(ctx context.Context, req WithdrawRequest) (BroadcastResult, error) {
 	unsignedResult, err := o.Chain.BuildUnsignedTx(ctx, req.Tx)
 	if err != nil {

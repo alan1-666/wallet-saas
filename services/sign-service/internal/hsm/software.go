@@ -6,8 +6,15 @@ type SoftwareBackend struct {
 	keys *keystore.Keys
 }
 
-func NewSoftwareBackend(path, namespace string) (*SoftwareBackend, error) {
-	keys, err := keystore.New(path, namespace)
+type SoftwareConfig struct {
+	Path       string
+	Namespace  string
+	Password   string
+	AutoCreate bool
+}
+
+func NewSoftwareBackend(cfg SoftwareConfig) (*SoftwareBackend, error) {
+	keys, err := keystore.New(cfg.Path, cfg.Namespace, cfg.Password, cfg.AutoCreate)
 	if err != nil {
 		return nil, err
 	}
@@ -23,4 +30,16 @@ func (b *SoftwareBackend) Close() error {
 
 func (b *SoftwareBackend) LoadOrCreateSeed(slotID string) ([]byte, error) {
 	return b.keys.LoadOrCreateSeed(slotID)
+}
+
+func (b *SoftwareBackend) ProvisionSeed(slotID string, seed []byte) error {
+	return b.keys.ProvisionSeed(slotID, seed)
+}
+
+func (b *SoftwareBackend) ExportSeed(slotID string) ([]byte, error) {
+	return b.keys.LoadSeed(slotID)
+}
+
+func (b *SoftwareBackend) ReplaceSeed(slotID string, seed []byte) error {
+	return b.keys.ReplaceSeed(slotID, seed)
 }

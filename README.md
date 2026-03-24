@@ -5,7 +5,7 @@ A rewrite scaffold for centralized wallet SaaS.
 ## Services
 - `services/api-gateway`: external REST entry, auth/rate limit/idempotency gate.
 - `services/wallet-core`: orchestration, ledger/sign/chain ports.
-- `services/sign-service`: signing boundary service (HSM/MPC ready).
+- `services/sign-service`: signing boundary service with tenant-scoped HD roots, encrypted local vault, and HSM/MPC-ready backend abstraction.
 - `services/chain-gateway`: unified chain adapter gateway.
 
 ## Shared

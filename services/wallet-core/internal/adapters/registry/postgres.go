@@ -96,18 +96,20 @@ func (r *PostgresRegistry) UpsertWatchAddress(ctx context.Context, in ports.Watc
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO scan_watch_addresses (
   tenant_id, account_id, model, chain, coin, network, address,
-  min_confirmations, unlock_confirmations, treasury_account_id, auto_sweep, sweep_threshold, active
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,TRUE)
+  min_confirmations, unlock_confirmations, treasury_account_id, cold_account_id, auto_sweep, sweep_threshold, hot_balance_cap, active
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,TRUE)
 ON CONFLICT (model, chain, coin, network, address, tenant_id, account_id)
 DO UPDATE SET
   min_confirmations=EXCLUDED.min_confirmations,
   unlock_confirmations=EXCLUDED.unlock_confirmations,
   treasury_account_id=EXCLUDED.treasury_account_id,
+  cold_account_id=EXCLUDED.cold_account_id,
   auto_sweep=EXCLUDED.auto_sweep,
   sweep_threshold=EXCLUDED.sweep_threshold,
+  hot_balance_cap=EXCLUDED.hot_balance_cap,
   active=TRUE,
   updated_at=NOW()
-`, in.TenantID, in.AccountID, in.Model, in.Chain, in.Coin, in.Network, in.Address, in.MinConfirmations, in.UnlockConfirmations, in.TreasuryAccountID, in.AutoSweep, in.SweepThreshold)
+`, in.TenantID, in.AccountID, in.Model, in.Chain, in.Coin, in.Network, in.Address, in.MinConfirmations, in.UnlockConfirmations, in.TreasuryAccountID, in.ColdAccountID, in.AutoSweep, in.SweepThreshold, in.HotBalanceCap)
 	if err != nil {
 		return err
 	}
@@ -507,8 +509,10 @@ address TEXT NOT NULL,
 min_confirmations BIGINT NOT NULL DEFAULT 1,
 unlock_confirmations BIGINT NOT NULL DEFAULT 1,
 treasury_account_id TEXT NOT NULL DEFAULT 'treasury-main',
+cold_account_id TEXT NOT NULL DEFAULT '',
 auto_sweep BOOLEAN NOT NULL DEFAULT FALSE,
 sweep_threshold TEXT NOT NULL DEFAULT '0',
+hot_balance_cap TEXT NOT NULL DEFAULT '0',
 active BOOLEAN NOT NULL DEFAULT TRUE,
 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -570,6 +574,12 @@ ON chain_policies (chain, network)
 	}
 	if _, err := r.db.ExecContext(ctx, `ALTER TABLE scan_watch_addresses ALTER COLUMN auto_sweep SET DEFAULT FALSE`); err != nil {
 		return fmt.Errorf("registry schema alter default failed: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `ALTER TABLE scan_watch_addresses ADD COLUMN IF NOT EXISTS cold_account_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("registry schema alter scan_watch_addresses cold_account_id failed: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `ALTER TABLE scan_watch_addresses ADD COLUMN IF NOT EXISTS hot_balance_cap TEXT NOT NULL DEFAULT '0'`); err != nil {
+		return fmt.Errorf("registry schema alter scan_watch_addresses hot_balance_cap failed: %w", err)
 	}
 	if _, err := r.db.ExecContext(ctx, `ALTER TABLE scan_watch_addresses ADD COLUMN IF NOT EXISTS unlock_confirmations BIGINT NOT NULL DEFAULT 1`); err != nil {
 		return fmt.Errorf("registry schema alter scan_watch_addresses unlock_confirmations failed: %w", err)

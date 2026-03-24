@@ -78,6 +78,8 @@ services:
       SIGN_CUSTODY_SCHEME: "local-hsm-slot"
       SIGN_HSM_BACKEND: "software"
       SIGN_HSM_SLOT_PREFIX: "master"
+      SIGN_SOFTWARE_VAULT_PASSWORD: "dev-sign-vault-password"
+      SIGN_SOFTWARE_VAULT_AUTO_CREATE: "true"
       GOCACHE: "/tmp/gocache"
       GOMODCACHE: "/tmp/gomodcache"
       GOPROXY: "https://goproxy.cn,direct"

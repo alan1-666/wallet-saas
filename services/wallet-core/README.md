@@ -8,6 +8,9 @@ State orchestration and domain logic.
 - `GET /v1/withdraw/status?tenant_id=...&order_id=...`
 - `POST /v1/deposit/notify`
 - `POST /v1/sweep/run`
+- `POST /v1/treasury/transfer`
+- `GET /v1/treasury/transfer/status?tenant_id=...&transfer_order_id=...`
+- `GET /v1/treasury/waterline?tenant_id=...&hot_account_id=...&cold_account_id=...&asset=...&hot_balance_cap=...&hot_balance_floor=...`
 - `GET /v1/balance?tenant_id=...&account_id=...&asset=...`
 - `POST /v1/address/create`
 - `POST /v1/account/upsert`
@@ -86,11 +89,38 @@ State orchestration and domain logic.
   "min_confirmations": 1,
   "auto_sweep": false,
   "sweep_threshold": "1",
-  "treasury_account_id": "treasury-main"
+  "treasury_account_id": "treasury-main",
+  "cold_account_id": "treasury-cold",
+  "hot_balance_cap": "1000000000000000000"
 }
 ```
 - Response includes `key_id`, `derivation_path`, `change_index`, `address_index`.
 - Same `tenant_id + account_id + chain + network` reuses the same derived address. Registering another asset on that chain only adds a new watch row.
+- `treasury_account_id` is the hot-wallet destination for auto sweep. If `cold_account_id` and `hot_balance_cap` are configured, sweep routing moves overflow to cold once the projected hot vault balance exceeds the cap.
+
+### Treasury transfer request example
+```json
+{
+  "tenant_id": "t1",
+  "transfer_order_id": "rebalance-hot-1",
+  "from_account_id": "treasury-cold",
+  "to_account_id": "treasury-main",
+  "chain": "ethereum",
+  "network": "sepolia",
+  "asset": "ETH",
+  "amount": "500000000000000000",
+  "source_tier": "COLD",
+  "destination_tier": "HOT"
+}
+```
+- treasury transfers are intended for cold -> hot and hot -> cold rebalancing
+- source vault balance is reserved before broadcast, so repeated retries cannot oversubscribe the same hot/cold pool
+- on confirm, the destination vault is credited; on failure, the source vault reservation is rolled back
+
+### Treasury waterline monitoring
+- waterline reads current `vault_available` from both hot and cold accounts and compares the hot wallet against `hot_balance_floor` / `hot_balance_cap`
+- returned `recommended_action` will be one of `NONE`, `COLD_TO_HOT`, `HOT_TO_COLD`
+- `suggested_transfer_amount` is the deficit/excess needed to bring hot vault back inside the configured range
 
 ### Deposit notify request (state machine)
 ```json
@@ -123,6 +153,7 @@ State orchestration and domain logic.
 
 ### Ledger flow
 - withdraw create now enqueues a job and freezes funds in one transaction
+- sweep and treasury transfer broadcasts now use the signer/chain path without creating withdraw freezes, so internal treasury motion no longer mutates user ledger balances
 - dispatcher status flow is `QUEUED -> PROCESSING -> BROADCASTED -> CONFIRMED`, with failure path `PROCESSING -> QUEUED(retry)` and terminal failure `PROCESSING -> RELEASED/FAILED`
 - stale `PROCESSING` jobs are re-claimed after lease timeout; retries use exponential backoff until `WALLET_WITHDRAW_DISPATCH_MAX_ATTEMPTS`
 - same `from_address` is serialized only while a job is actively `PROCESSING`; once a tx is `BROADCASTED`, the next queued job for that address can be picked and will rely on the chain gateway's pending nonce resolution
@@ -140,6 +171,7 @@ State orchestration and domain logic.
 - `api_tokens`, `tenant_keys`, `audit_logs`
 - `idem_requests`
 - `deposit_events`, `sweep_orders`, `withdraw_jobs`
+- `treasury_transfer_orders`
 - `withdraw_tx_attempts`
 - `ledger_audit_events`
 - `ledger_balances`, `ledger_journals`

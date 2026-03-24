@@ -148,8 +148,10 @@ func (h *WithdrawHandler) CreateAddress(w http.ResponseWriter, r *http.Request) 
 		AddressIndex:      prepared.AddressIndex,
 		MinConfirmations:  req.MinConfirmations,
 		TreasuryAccountID: req.TreasuryAccountID,
+		ColdAccountID:     req.ColdAccountID,
 		AutoSweep:         autoSweep,
 		SweepThreshold:    req.SweepThreshold,
+		HotBalanceCap:     req.HotBalanceCap,
 	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

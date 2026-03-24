@@ -6,7 +6,12 @@ import (
 )
 
 func TestSoftwareBackendLoadOrCreateSeed(t *testing.T) {
-	backend, err := NewSoftwareBackend(t.TempDir(), "software")
+	backend, err := NewSoftwareBackend(SoftwareConfig{
+		Path:       t.TempDir(),
+		Namespace:  "software",
+		Password:   "test-password",
+		AutoCreate: true,
+	})
 	if err != nil {
 		t.Fatalf("new software backend: %v", err)
 	}

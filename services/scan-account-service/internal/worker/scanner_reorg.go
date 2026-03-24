@@ -110,6 +110,8 @@ func buildWatchFromCandidate(c store.ReorgCandidate, minConf, unlockConf int64) 
 		MinConfirmations:    minConf,
 		UnlockConfirmations: unlockConf,
 		TreasuryAccountID:   fallback(c.TreasuryAccountID, "treasury-main"),
+		ColdAccountID:       strings.TrimSpace(c.ColdAccountID),
 		SweepThreshold:      c.SweepThreshold,
+		HotBalanceCap:       c.HotBalanceCap,
 	}
 }

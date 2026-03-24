@@ -24,6 +24,11 @@ type LedgerPort interface {
 	StartSweep(ctx context.Context, in SweepCollectInput) error
 	ConfirmSweepOnChain(ctx context.Context, in SweepConfirmInput) error
 	FailSweepOnChain(ctx context.Context, tenantID, sweepOrderID, reason string, confirmations int64) error
+	ReserveTreasuryTransfer(ctx context.Context, in TreasuryTransferReserveInput) error
+	MarkTreasuryTransferBroadcasted(ctx context.Context, tenantID, transferOrderID, txHash string, requiredConfs int64) error
+	ConfirmTreasuryTransferOnChain(ctx context.Context, in TreasuryTransferConfirmInput) error
+	FailTreasuryTransferOnChain(ctx context.Context, tenantID, transferOrderID, reason string, confirmations int64) error
+	GetTreasuryTransferStatus(ctx context.Context, tenantID, transferOrderID string) (TreasuryTransferStatus, error)
 	GetBalance(ctx context.Context, tenantID, accountID, asset string) (BalanceSnapshot, error)
 	ListAccountAssets(ctx context.Context, tenantID, accountID string) ([]AccountAsset, error)
 }
@@ -183,6 +188,41 @@ type SweepConfirmInput struct {
 	RequiredConfs int64
 }
 
+type TreasuryTransferReserveInput struct {
+	TenantID              string
+	TransferOrderID       string
+	FromAccountID         string
+	ToAccountID           string
+	Chain                 string
+	Network               string
+	Asset                 string
+	Amount                string
+	RequiredConfirmations int64
+	SourceTier            string
+	DestinationTier       string
+}
+
+type TreasuryTransferConfirmInput struct {
+	TenantID        string
+	TransferOrderID string
+	TxHash          string
+	Confirmations   int64
+	RequiredConfs   int64
+}
+
+type TreasuryTransferStatus struct {
+	Status          string `json:"status"`
+	TxHash          string `json:"tx_hash"`
+	Reason          string `json:"reason"`
+	Amount          string `json:"amount"`
+	FromAccountID   string `json:"from_account_id"`
+	ToAccountID     string `json:"to_account_id"`
+	SourceTier      string `json:"source_tier"`
+	DestinationTier string `json:"destination_tier"`
+	Confirmations   int64  `json:"confirmations"`
+	RequiredConfs   int64  `json:"required_confirmations"`
+}
+
 type BroadcastParams struct {
 	Chain      string
 	Network    string
@@ -247,8 +287,10 @@ type WatchAddressInput struct {
 	MinConfirmations    int64
 	UnlockConfirmations int64
 	TreasuryAccountID   string
+	ColdAccountID       string
 	AutoSweep           bool
 	SweepThreshold      string
+	HotBalanceCap       string
 }
 
 type WalletAccount struct {
