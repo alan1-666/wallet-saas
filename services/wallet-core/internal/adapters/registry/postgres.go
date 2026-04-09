@@ -97,7 +97,7 @@ func (r *PostgresRegistry) UpsertWatchAddress(ctx context.Context, in ports.Watc
 INSERT INTO scan_watch_addresses (
   tenant_id, account_id, model, chain, coin, network, address,
   min_confirmations, unlock_confirmations, treasury_account_id, cold_account_id, auto_sweep, sweep_threshold, hot_balance_cap, active
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,TRUE)
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,TRUE)
 ON CONFLICT (model, chain, coin, network, address, tenant_id, account_id)
 DO UPDATE SET
   min_confirmations=EXCLUDED.min_confirmations,
