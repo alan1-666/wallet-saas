@@ -1,0 +1,47 @@
+# Example override for co-located deployment with FunnyOption.
+# Copy to docker-compose.override.yml and adjust as needed.
+
+networks:
+  default:
+    name: wallet-saas-default
+  custody-bridge:
+    external: true
+
+services:
+  api-gateway:
+    ports:
+      - "18080:8080"
+    networks:
+      - default
+      - custody-bridge
+
+  wallet-core:
+    ports:
+      - "18081:8081"
+
+  chain-gateway:
+    ports:
+      - "18082:8082"
+      - "19082:9082"
+
+  sign-service:
+    ports:
+      - "19091:9091"
+    environment:
+      SIGN_SOFTWARE_VAULT_PASSWORD: "${SIGN_VAULT_PASSWORD:-changeme}"
+      SIGN_SOFTWARE_VAULT_AUTO_CREATE: "true"
+
+  scan-service:
+    environment:
+      PROJECT_NOTIFY_BASE_URL: "http://funnyoption-staging-api-1:8080"
+      PROJECT_NOTIFY_TOKEN: "${CUSTODY_DEPOSIT_TOKEN:-funnyoption_custody_test_2026}"
+      PROJECT_NOTIFY_TIMEOUT_MS: "8000"
+      PROJECT_NOTIFY_CHAIN_ID_MAP: "binance:testnet=97"
+      PROJECT_NOTIFY_DEFAULT_CHAIN_ID: "0"
+    networks:
+      - default
+      - custody-bridge
+
+  postgres:
+    ports:
+      - "15432:5432"

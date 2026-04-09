@@ -1,6 +1,6 @@
 module wallet-saas-v2/services/wallet-core
 
-go 1.26.0
+go 1.24.0
 
 require (
 	github.com/gagliardetto/solana-go v1.14.0

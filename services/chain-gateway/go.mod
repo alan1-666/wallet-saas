@@ -1,6 +1,6 @@
 module wallet-saas-v2/services/chain-gateway
 
-go 1.26.0
+go 1.24.0
 
 require (
 	cosmossdk.io/api v0.7.5
