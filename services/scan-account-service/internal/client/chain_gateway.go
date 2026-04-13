@@ -2,9 +2,11 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +15,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
@@ -45,13 +48,20 @@ type chainRequestGate struct {
 }
 
 type IncomingTransfer struct {
-	TxHash        string
-	FromAddress   string
-	ToAddress     string
-	Amount        string
-	Confirmations int64
-	Index         int64
-	Status        string
+	TxHash          string
+	FromAddress     string
+	ToAddress       string
+	Amount          string
+	Confirmations   int64
+	Index           int64
+	Status          string
+	ContractAddress string
+}
+
+type BlockMeta struct {
+	Number     int64
+	Hash       string
+	ParentHash string
 }
 
 type TxFinality struct {
@@ -65,7 +75,13 @@ func NewChainGateway(addr string, timeout time.Duration, optList ...ChainGateway
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	var grpcCreds grpc.DialOption
+	if os.Getenv("GRPC_TLS_ENABLED") == "true" {
+		grpcCreds = grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12}))
+	} else {
+		grpcCreds = grpc.WithTransportCredentials(insecure.NewCredentials())
+	}
+	conn, err := grpc.NewClient(addr, grpcCreds)
 	if err != nil {
 		return nil, err
 	}
@@ -89,49 +105,65 @@ func (c *ChainGateway) Close() error {
 	return c.conn.Close()
 }
 
-func (c *ChainGateway) ListIncomingTransfers(ctx context.Context, model, chain, coin, network, address, cursor string, pageSize int) ([]IncomingTransfer, string, error) {
-	type result struct {
-		items      []IncomingTransfer
-		nextCursor string
+type IncomingTransferResult struct {
+	Items      []IncomingTransfer
+	NextCursor string
+	Blocks     []BlockMeta
+}
+
+func (c *ChainGateway) ListIncomingTransfers(ctx context.Context, model, chain, coin, network, address, cursor string, pageSize int, contractAddress ...string) (IncomingTransferResult, error) {
+	ca := ""
+	if len(contractAddress) > 0 {
+		ca = strings.TrimSpace(contractAddress[0])
 	}
-	out, err := withChainControl(c, ctx, chain, func(callCtx context.Context) (result, error) {
+	out, err := withChainControl(c, ctx, chain, func(callCtx context.Context) (IncomingTransferResult, error) {
 		callCtx, cancel := context.WithTimeout(callCtx, c.timeout)
 		defer cancel()
 		network = strings.TrimSpace(network)
 		if network == "" {
-			return result{}, fmt.Errorf("network is required")
+			return IncomingTransferResult{}, fmt.Errorf("network is required")
 		}
 		resp, err := c.client.ListIncomingTransfers(callCtx, &pb.ListIncomingTransfersRequest{
-			Model:    model,
-			Chain:    chain,
-			Coin:     coin,
-			Network:  network,
-			Address:  address,
-			Page:     1,
-			PageSize: uint32(pageSize),
-			Cursor:   cursor,
+			Model:           model,
+			Chain:           chain,
+			Coin:            coin,
+			Network:         network,
+			Address:         address,
+			Page:            1,
+			PageSize:        uint32(pageSize),
+			Cursor:          cursor,
+			ContractAddress: ca,
 		})
 		if err != nil {
-			return result{}, err
+			return IncomingTransferResult{}, err
 		}
 		items := make([]IncomingTransfer, 0, len(resp.GetItems()))
 		for _, item := range resp.Items {
 			items = append(items, IncomingTransfer{
-				TxHash:        item.GetTxHash(),
-				FromAddress:   item.GetFromAddress(),
-				ToAddress:     item.GetToAddress(),
-				Index:         item.GetIndex(),
-				Amount:        item.GetAmount(),
-				Confirmations: item.GetConfirmations(),
-				Status:        item.GetStatus(),
+				TxHash:          item.GetTxHash(),
+				FromAddress:     item.GetFromAddress(),
+				ToAddress:       item.GetToAddress(),
+				Index:           item.GetIndex(),
+				Amount:          item.GetAmount(),
+				Confirmations:   item.GetConfirmations(),
+				Status:          item.GetStatus(),
+				ContractAddress: item.GetContractAddress(),
 			})
 		}
-		return result{items: items, nextCursor: resp.GetNextCursor()}, nil
+		blocks := make([]BlockMeta, 0, len(resp.GetBlocks()))
+		for _, b := range resp.GetBlocks() {
+			blocks = append(blocks, BlockMeta{
+				Number:     b.GetNumber(),
+				Hash:       b.GetHash(),
+				ParentHash: b.GetParentHash(),
+			})
+		}
+		return IncomingTransferResult{Items: items, NextCursor: resp.GetNextCursor(), Blocks: blocks}, nil
 	})
 	if err != nil {
-		return nil, "", err
+		return IncomingTransferResult{}, err
 	}
-	return out.items, out.nextCursor, nil
+	return out, nil
 }
 
 func (c *ChainGateway) TxFinality(ctx context.Context, chain, coin, network, txHash string) (TxFinality, error) {

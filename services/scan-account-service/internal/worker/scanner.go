@@ -34,6 +34,7 @@ type Scanner struct {
 	SweepMinBalance           string
 	ProjectChainIDMap         map[string]int64
 	ProjectDefaultChainID     int64
+	AllowedChains             []string
 }
 
 func (s *Scanner) Run(ctx context.Context) error {
@@ -72,6 +73,11 @@ func (s *Scanner) Run(ctx context.Context) error {
 	}
 	if s.OutgoingNotFoundGrace <= 0 {
 		s.OutgoingNotFoundGrace = 45 * time.Second
+	}
+	if len(s.AllowedChains) > 0 {
+		log.Printf("chain shard mode: scanning %v only", s.AllowedChains)
+	} else {
+		log.Printf("scanning all chains (no shard filter)")
 	}
 	ticker := time.NewTicker(s.Interval)
 	defer ticker.Stop()

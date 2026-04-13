@@ -59,7 +59,7 @@ type SweepOutboxPayload struct {
 }
 
 func (s *Scanner) dispatchOutbox(ctx context.Context) error {
-	events, err := s.Store.ListPendingOutboxEvents(ctx, s.WatchLimit)
+	events, err := s.Store.ListPendingOutboxEvents(ctx, s.WatchLimit, s.AllowedChains)
 	if err != nil {
 		return err
 	}
@@ -127,12 +127,12 @@ func (s *Scanner) handleDepositOutboxEvent(ctx context.Context, ev store.OutboxE
 	}
 	if payload.ProjectNotify {
 		if err := s.enqueueProjectDepositOutboxEvent(ctx, payload); err != nil {
-			return err
+			log.Printf("enqueue project deposit failed (non-fatal) id=%d err=%v", ev.ID, err)
 		}
 	}
 	if payload.SweepTrigger {
 		if err := s.enqueueSweepTriggerOutboxEvent(ctx, payload); err != nil {
-			return err
+			log.Printf("enqueue sweep trigger failed (non-fatal) id=%d err=%v", ev.ID, err)
 		}
 	}
 	return nil

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 )
 
 type Postgres struct {
@@ -22,6 +22,7 @@ type WatchAddress struct {
 	Coin                string
 	Network             string
 	Address             string
+	ContractAddress     string
 	MinConfirmations    int64
 	UnlockConfirmations int64
 	TreasuryAccountID   string
@@ -82,6 +83,7 @@ type ReorgCandidate struct {
 	Coin                string
 	Network             string
 	Address             string
+	ContractAddress     string
 	TxHash              string
 	EventIndex          int64
 	Status              string
@@ -94,6 +96,7 @@ type ReorgCandidate struct {
 	UnlockConfirmations int64
 	TreasuryAccountID   string
 	ColdAccountID       string
+	AutoSweep           bool
 	SweepThreshold      string
 	HotBalanceCap       string
 }
@@ -120,6 +123,10 @@ func NewPostgres(dsn string) (*Postgres, error) {
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(20)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetConnMaxIdleTime(2 * time.Minute)
 	if err := db.Ping(); err != nil {
 		return nil, err
 	}
@@ -134,9 +141,13 @@ func (p *Postgres) Close() error {
 	return p.db.Close()
 }
 
-func (p *Postgres) ListWatchAddresses(ctx context.Context, model string, limit int) ([]WatchAddress, error) {
-	const queryWithRegistry = `
-SELECT sw.tenant_id, sw.account_id, sw.model, sw.chain, sw.coin, sw.network, sw.address, sw.min_confirmations, sw.unlock_confirmations, sw.treasury_account_id, sw.cold_account_id, sw.auto_sweep, sw.sweep_threshold, sw.hot_balance_cap
+func (p *Postgres) ListWatchAddresses(ctx context.Context, model string, limit int, allowedChains []string) ([]WatchAddress, error) {
+	chainFilter := ""
+	if len(allowedChains) > 0 {
+		chainFilter = " AND LOWER(sw.chain) = ANY($3::text[])"
+	}
+	queryWithRegistry := `
+SELECT sw.tenant_id, sw.account_id, sw.model, sw.chain, sw.coin, sw.network, sw.address, COALESCE(sw.contract_address, ''), sw.min_confirmations, sw.unlock_confirmations, sw.treasury_account_id, sw.cold_account_id, sw.auto_sweep, sw.sweep_threshold, sw.hot_balance_cap
 FROM scan_watch_addresses sw
 WHERE sw.active = TRUE
   AND sw.model = $1
@@ -152,21 +163,31 @@ WHERE sw.active = TRUE
         AND LOWER(wa.address) = LOWER(sw.address)
         AND UPPER(COALESCE(wa.status, '')) = 'ACTIVE'
     )
-  )
+  )` + chainFilter + `
 ORDER BY sw.id ASC
 LIMIT $2
 `
-	const queryFallback = `
-SELECT tenant_id, account_id, model, chain, coin, network, address, min_confirmations, unlock_confirmations, treasury_account_id, cold_account_id, auto_sweep, sweep_threshold, hot_balance_cap
+	chainFilterFallback := ""
+	if len(allowedChains) > 0 {
+		chainFilterFallback = " AND LOWER(chain) = ANY($3::text[])"
+	}
+	queryFallback := `
+SELECT tenant_id, account_id, model, chain, coin, network, address, COALESCE(contract_address, ''), min_confirmations, unlock_confirmations, treasury_account_id, cold_account_id, auto_sweep, sweep_threshold, hot_balance_cap
 FROM scan_watch_addresses
 WHERE active = TRUE
-  AND model = $1
+  AND model = $1` + chainFilterFallback + `
 ORDER BY id ASC
 LIMIT $2
 `
-	rows, err := p.db.QueryContext(ctx, queryWithRegistry, strings.ToLower(strings.TrimSpace(model)), limit)
+	var rows *sql.Rows
+	var err error
+	args := []interface{}{strings.ToLower(strings.TrimSpace(model)), limit}
+	if len(allowedChains) > 0 {
+		args = append(args, pq.Array(allowedChains))
+	}
+	rows, err = p.db.QueryContext(ctx, queryWithRegistry, args...)
 	if err != nil && strings.Contains(strings.ToLower(err.Error()), "wallet_addresses") {
-		rows, err = p.db.QueryContext(ctx, queryFallback, strings.ToLower(strings.TrimSpace(model)), limit)
+		rows, err = p.db.QueryContext(ctx, queryFallback, args...)
 	}
 	if err != nil {
 		return nil, err
@@ -176,7 +197,7 @@ LIMIT $2
 	out := make([]WatchAddress, 0, limit)
 	for rows.Next() {
 		var w WatchAddress
-		if err := rows.Scan(&w.TenantID, &w.AccountID, &w.Model, &w.Chain, &w.Coin, &w.Network, &w.Address, &w.MinConfirmations, &w.UnlockConfirmations, &w.TreasuryAccountID, &w.ColdAccountID, &w.AutoSweep, &w.SweepThreshold, &w.HotBalanceCap); err != nil {
+		if err := rows.Scan(&w.TenantID, &w.AccountID, &w.Model, &w.Chain, &w.Coin, &w.Network, &w.Address, &w.ContractAddress, &w.MinConfirmations, &w.UnlockConfirmations, &w.TreasuryAccountID, &w.ColdAccountID, &w.AutoSweep, &w.SweepThreshold, &w.HotBalanceCap); err != nil {
 			return nil, err
 		}
 		out = append(out, w)
@@ -373,12 +394,18 @@ WHERE tenant_id=$6 AND account_id=$7 AND model=$8 AND chain=$9 AND coin=$10 AND 
 	}, nil
 }
 
-func (p *Postgres) ListReorgCandidates(ctx context.Context, reorgWindow int64, limit int) ([]ReorgCandidate, error) {
+func (p *Postgres) ListReorgCandidates(ctx context.Context, reorgWindow int64, limit int, allowedChains []string) ([]ReorgCandidate, error) {
 	if reorgWindow <= 0 {
 		reorgWindow = 6
 	}
 	if limit <= 0 {
 		limit = 500
+	}
+	chainFilter := ""
+	args := []interface{}{reorgWindow, limit}
+	if len(allowedChains) > 0 {
+		chainFilter = " AND LOWER(se.chain) = ANY($3::text[])"
+		args = append(args, pq.Array(allowedChains))
 	}
 	rows, err := p.db.QueryContext(ctx, `
 SELECT
@@ -389,6 +416,7 @@ SELECT
   se.coin,
   se.network,
   se.address,
+  COALESCE(sw.contract_address, '') AS contract_address,
   se.tx_hash,
   se.event_index,
   se.status,
@@ -401,6 +429,7 @@ SELECT
   COALESCE(sw.unlock_confirmations, GREATEST(COALESCE(sw.min_confirmations, 1), 1)) AS unlock_confirmations,
   COALESCE(sw.treasury_account_id, 'treasury-main') AS treasury_account_id,
   COALESCE(sw.cold_account_id, '') AS cold_account_id,
+  COALESCE(sw.auto_sweep, FALSE) AS auto_sweep,
   COALESCE(sw.sweep_threshold, '0') AS sweep_threshold,
   COALESCE(sw.hot_balance_cap, '0') AS hot_balance_cap
 FROM scan_seen_events se
@@ -416,10 +445,10 @@ WHERE UPPER(COALESCE(se.status, '')) NOT IN ('REORGED', 'REVERTED')
   AND (
     se.not_found_count > 0
     OR se.confirmations < GREATEST(COALESCE(sw.unlock_confirmations, GREATEST(COALESCE(sw.min_confirmations, 1), 1) + $1), GREATEST(COALESCE(sw.min_confirmations, 1), 1))
-  )
+  )`+chainFilter+`
 ORDER BY se.updated_at DESC, se.created_at DESC
 LIMIT $2
-`, reorgWindow, limit)
+`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -435,6 +464,7 @@ LIMIT $2
 			&item.Coin,
 			&item.Network,
 			&item.Address,
+			&item.ContractAddress,
 			&item.TxHash,
 			&item.EventIndex,
 			&item.Status,
@@ -447,6 +477,7 @@ LIMIT $2
 			&item.UnlockConfirmations,
 			&item.TreasuryAccountID,
 			&item.ColdAccountID,
+			&item.AutoSweep,
 			&item.SweepThreshold,
 			&item.HotBalanceCap,
 		); err != nil {
@@ -511,6 +542,7 @@ DO UPDATE SET
   next_retry_at = NOW(),
   last_error = '',
   updated_at = NOW()
+WHERE scan_event_outbox.status NOT IN ('DONE', 'FAILED')
 	`, ev.EventKey, ev.TenantID, ev.Chain, ev.Network, ev.EventType, ev.Payload, ev.MaxAttempts)
 	return err
 }
@@ -549,18 +581,25 @@ WHERE scan_event_outbox.status = 'FAILED'
 	return err
 }
 
-func (p *Postgres) ListPendingOutboxEvents(ctx context.Context, limit int) ([]OutboxEvent, error) {
+func (p *Postgres) ListPendingOutboxEvents(ctx context.Context, limit int, allowedChains []string) ([]OutboxEvent, error) {
 	if limit <= 0 {
 		limit = 200
+	}
+	chainFilter := ""
+	args := []interface{}{limit}
+	if len(allowedChains) > 0 {
+		chainFilter = " AND LOWER(chain) = ANY($2::text[])"
+		args = append(args, pq.Array(allowedChains))
 	}
 	rows, err := p.db.QueryContext(ctx, `
 SELECT id, event_key, tenant_id, chain, network, event_type, payload, attempt_count, max_attempts
 FROM scan_event_outbox
 WHERE status='PENDING'
-  AND next_retry_at <= NOW()
+  AND next_retry_at <= NOW()`+chainFilter+`
 ORDER BY id ASC
 LIMIT $1
-`, limit)
+FOR UPDATE SKIP LOCKED
+`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -751,6 +790,7 @@ func (p *Postgres) initSchema(ctx context.Context) error {
   coin TEXT NOT NULL,
   network TEXT NOT NULL,
   address TEXT NOT NULL,
+  contract_address TEXT NOT NULL DEFAULT '',
   min_confirmations BIGINT NOT NULL DEFAULT 1,
   unlock_confirmations BIGINT NOT NULL DEFAULT 1,
   treasury_account_id TEXT NOT NULL DEFAULT 'treasury-main',
@@ -823,6 +863,15 @@ func (p *Postgres) initSchema(ctx context.Context) error {
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )`,
+		`CREATE TABLE IF NOT EXISTS scan_block_hashes (
+  chain TEXT NOT NULL,
+  network TEXT NOT NULL,
+  block_number BIGINT NOT NULL,
+  block_hash TEXT NOT NULL,
+  parent_hash TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (chain, network, block_number)
+)`,
 		`CREATE TABLE IF NOT EXISTS scan_outgoing_watch (
   kind TEXT NOT NULL,
   tenant_id TEXT NOT NULL,
@@ -857,6 +906,7 @@ func (p *Postgres) initSchema(ctx context.Context) error {
 	}
 
 	alterStmts := []string{
+		`ALTER TABLE scan_watch_addresses ADD COLUMN IF NOT EXISTS contract_address TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE scan_watch_addresses ADD COLUMN IF NOT EXISTS model TEXT NOT NULL DEFAULT 'account'`,
 		`ALTER TABLE scan_watch_addresses ADD COLUMN IF NOT EXISTS network TEXT NOT NULL DEFAULT 'unknown'`,
 		`ALTER TABLE scan_watch_addresses ADD COLUMN IF NOT EXISTS unlock_confirmations BIGINT NOT NULL DEFAULT 1`,
@@ -913,6 +963,66 @@ WHERE unlock_confirmations IS NULL OR unlock_confirmations <= 0 OR unlock_confir
 		return fmt.Errorf("create outgoing watch index failed: %w", err)
 	}
 	return nil
+}
+
+type BlockHash struct {
+	BlockNumber int64
+	BlockHash   string
+	ParentHash  string
+}
+
+func (p *Postgres) UpsertBlockHash(ctx context.Context, chain, network string, blockNumber int64, blockHash, parentHash string) error {
+	_, err := p.db.ExecContext(ctx, `
+INSERT INTO scan_block_hashes (chain, network, block_number, block_hash, parent_hash)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (chain, network, block_number) DO UPDATE SET
+  block_hash = EXCLUDED.block_hash,
+  parent_hash = EXCLUDED.parent_hash
+`, strings.ToLower(strings.TrimSpace(chain)),
+		strings.ToLower(strings.TrimSpace(network)),
+		blockNumber, strings.ToLower(strings.TrimSpace(blockHash)),
+		strings.ToLower(strings.TrimSpace(parentHash)))
+	return err
+}
+
+func (p *Postgres) GetBlockHash(ctx context.Context, chain, network string, blockNumber int64) (BlockHash, bool, error) {
+	var bh BlockHash
+	err := p.db.QueryRowContext(ctx, `
+SELECT block_number, block_hash, parent_hash
+FROM scan_block_hashes
+WHERE chain=$1 AND network=$2 AND block_number=$3
+`, strings.ToLower(strings.TrimSpace(chain)),
+		strings.ToLower(strings.TrimSpace(network)),
+		blockNumber).Scan(&bh.BlockNumber, &bh.BlockHash, &bh.ParentHash)
+	if err != nil {
+		if strings.Contains(err.Error(), "no rows") {
+			return BlockHash{}, false, nil
+		}
+		return BlockHash{}, false, err
+	}
+	return bh, true, nil
+}
+
+func (p *Postgres) PruneBlockHashes(ctx context.Context, chain, network string, keepAfter int64) error {
+	_, err := p.db.ExecContext(ctx, `
+DELETE FROM scan_block_hashes WHERE chain=$1 AND network=$2 AND block_number < $3
+`, strings.ToLower(strings.TrimSpace(chain)),
+		strings.ToLower(strings.TrimSpace(network)),
+		keepAfter)
+	return err
+}
+
+func (p *Postgres) RewindChainCheckpoint(ctx context.Context, model, chain, coin, network string, newCursor string) error {
+	_, err := p.db.ExecContext(ctx, `
+UPDATE scan_chain_checkpoints
+SET cursor = $5, updated_at = NOW()
+WHERE model = $1 AND chain = $2 AND coin = $3 AND network = $4
+`, strings.ToLower(strings.TrimSpace(model)),
+		strings.ToLower(strings.TrimSpace(chain)),
+		strings.ToUpper(strings.TrimSpace(coin)),
+		strings.ToLower(strings.TrimSpace(network)),
+		newCursor)
+	return err
 }
 
 func min(a, b int) int {

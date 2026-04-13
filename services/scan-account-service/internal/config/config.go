@@ -38,6 +38,7 @@ type Config struct {
 	ChainRetryMaxAttempts        int
 	ChainRetryBaseMS             int
 	ChainRetryMaxMS              int
+	AllowedChains                []string
 }
 
 func Load() Config {
@@ -73,6 +74,7 @@ func Load() Config {
 		ChainRetryMaxAttempts:        atoi(getenv("SCAN_CHAIN_RETRY_MAX_ATTEMPTS", "3"), 3),
 		ChainRetryBaseMS:             atoi(getenv("SCAN_CHAIN_RETRY_BASE_MS", "250"), 250),
 		ChainRetryMaxMS:              atoi(getenv("SCAN_CHAIN_RETRY_MAX_MS", "4000"), 4000),
+		AllowedChains:                parseAllowedChains(os.Getenv("SCAN_ALLOWED_CHAINS")),
 	}
 	return cfg
 }
@@ -152,6 +154,21 @@ func parseFloatMap(raw string) map[string]float64 {
 			continue
 		}
 		out[key] = val
+	}
+	return out
+}
+
+func parseAllowedChains(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, item := range strings.Split(raw, ",") {
+		c := strings.ToLower(strings.TrimSpace(item))
+		if c != "" {
+			out = append(out, c)
+		}
 	}
 	return out
 }

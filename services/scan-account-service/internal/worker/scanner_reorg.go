@@ -13,7 +13,7 @@ func (s *Scanner) reconcileReorgCandidates(ctx context.Context) error {
 	if limit <= 0 {
 		limit = s.WatchLimit
 	}
-	candidates, err := s.Store.ListReorgCandidates(ctx, s.ReorgWindow, limit)
+	candidates, err := s.Store.ListReorgCandidates(ctx, s.ReorgWindow, limit, s.AllowedChains)
 	if err != nil {
 		return err
 	}
@@ -107,8 +107,10 @@ func buildWatchFromCandidate(c store.ReorgCandidate, minConf, unlockConf int64) 
 		Coin:                c.Coin,
 		Network:             c.Network,
 		Address:             c.Address,
+		ContractAddress:     c.ContractAddress,
 		MinConfirmations:    minConf,
 		UnlockConfirmations: unlockConf,
+		AutoSweep:           c.AutoSweep,
 		TreasuryAccountID:   fallback(c.TreasuryAccountID, "treasury-main"),
 		ColdAccountID:       strings.TrimSpace(c.ColdAccountID),
 		SweepThreshold:      c.SweepThreshold,
