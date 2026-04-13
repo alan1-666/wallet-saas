@@ -67,14 +67,15 @@ func (s *GRPCServer) SendTx(ctx context.Context, req *pb.SendTxRequest) (*pb.Sen
 
 func (s *GRPCServer) ListIncomingTransfers(ctx context.Context, req *pb.ListIncomingTransfersRequest) (*pb.ListIncomingTransfersResponse, error) {
 	out, err := s.Chain.ListIncomingTransfers(ctx, ports.IncomingTransferInput{
-		Model:    ports.ChainModel(req.GetModel()),
-		Chain:    req.GetChain(),
-		Coin:     req.GetCoin(),
-		Network:  req.GetNetwork(),
-		Address:  req.GetAddress(),
-		Page:     req.GetPage(),
-		PageSize: req.GetPageSize(),
-		Cursor:   req.GetCursor(),
+		Model:           ports.ChainModel(req.GetModel()),
+		Chain:           req.GetChain(),
+		Coin:            req.GetCoin(),
+		Network:         req.GetNetwork(),
+		Address:         req.GetAddress(),
+		Page:            req.GetPage(),
+		PageSize:        req.GetPageSize(),
+		Cursor:          req.GetCursor(),
+		ContractAddress: req.GetContractAddress(),
 	})
 	if err != nil {
 		return nil, err
@@ -82,18 +83,28 @@ func (s *GRPCServer) ListIncomingTransfers(ctx context.Context, req *pb.ListInco
 	items := make([]*pb.IncomingTransfer, 0, len(out.Items))
 	for _, it := range out.Items {
 		items = append(items, &pb.IncomingTransfer{
-			TxHash:        it.TxHash,
-			FromAddress:   it.FromAddress,
-			ToAddress:     it.ToAddress,
-			Amount:        it.Amount,
-			Confirmations: it.Confirmations,
-			Index:         it.Index,
-			Status:        it.Status,
+			TxHash:          it.TxHash,
+			FromAddress:     it.FromAddress,
+			ToAddress:       it.ToAddress,
+			Amount:          it.Amount,
+			Confirmations:   it.Confirmations,
+			Index:           it.Index,
+			Status:          it.Status,
+			ContractAddress: it.ContractAddress,
+		})
+	}
+	pbBlocks := make([]*pb.BlockMeta, 0, len(out.Blocks))
+	for _, b := range out.Blocks {
+		pbBlocks = append(pbBlocks, &pb.BlockMeta{
+			Number:     b.Number,
+			Hash:       b.Hash,
+			ParentHash: b.ParentHash,
 		})
 	}
 	return &pb.ListIncomingTransfersResponse{
 		Items:      items,
 		NextCursor: out.NextCursor,
+		Blocks:     pbBlocks,
 	}, nil
 }
 

@@ -14,7 +14,40 @@ func IncomingTransfers(model ports.ChainModel, chain string, raw map[string]any,
 		return ports.IncomingTransferResult{Items: items}
 	}
 	items, next := extractAccountTransfers(chain, raw, watchAddress)
-	return ports.IncomingTransferResult{Items: items, NextCursor: next}
+	blocks := extractBlockMetas(raw)
+	return ports.IncomingTransferResult{Items: items, NextCursor: next, Blocks: blocks}
+}
+
+func extractBlockMetas(raw map[string]any) []ports.BlockMeta {
+	arr, ok := raw["blocks"]
+	if !ok {
+		return nil
+	}
+	blockList, ok := arr.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]ports.BlockMeta, 0, len(blockList))
+	for _, item := range blockList {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		var bm ports.BlockMeta
+		if v, ok := m["number"].(float64); ok {
+			bm.Number = int64(v)
+		}
+		if v, ok := m["hash"].(string); ok {
+			bm.Hash = v
+		}
+		if v, ok := m["parent_hash"].(string); ok {
+			bm.ParentHash = v
+		}
+		if bm.Hash != "" {
+			out = append(out, bm)
+		}
+	}
+	return out
 }
 
 func Finality(txHash string, raw map[string]any) ports.TxFinality {
@@ -81,13 +114,14 @@ func extractAccountTransfersEVM(raw map[string]any, watchAddress string) ([]port
 		Value string `json:"value"`
 	}
 	type txNode struct {
-		Hash          string        `json:"hash"`
-		Index         int64         `json:"index"`
-		Froms         []addressNode `json:"froms"`
-		Tos           []addressNode `json:"tos"`
-		Values        []valueNode   `json:"values"`
-		Confirmations int64         `json:"confirmations"`
-		Status        string        `json:"status"`
+		Hash            string        `json:"hash"`
+		Index           int64         `json:"index"`
+		Froms           []addressNode `json:"froms"`
+		Tos             []addressNode `json:"tos"`
+		Values          []valueNode   `json:"values"`
+		Confirmations   int64         `json:"confirmations"`
+		Status          string        `json:"status"`
+		ContractAddress string        `json:"contract_address"`
 	}
 	type resp struct {
 		Tx []txNode `json:"tx"`
@@ -125,13 +159,14 @@ func extractAccountTransfersEVM(raw map[string]any, watchAddress string) ([]port
 			idx = int64(i)
 		}
 		out = append(out, ports.IncomingTransfer{
-			TxHash:        strings.TrimSpace(tx.Hash),
-			FromAddress:   from,
-			ToAddress:     fallback(to, watchAddress),
-			Amount:        amount,
-			Confirmations: normalizeConfirmations(tx.Confirmations),
-			Index:         idx,
-			Status:        normalizeTxStatus(tx.Status),
+			TxHash:          strings.TrimSpace(tx.Hash),
+			FromAddress:     from,
+			ToAddress:       fallback(to, watchAddress),
+			Amount:          amount,
+			Confirmations:   normalizeConfirmations(tx.Confirmations),
+			Index:           idx,
+			Status:          normalizeTxStatus(tx.Status),
+			ContractAddress: strings.ToLower(strings.TrimSpace(tx.ContractAddress)),
 		})
 	}
 	next := findFirstString(raw, "next_cursor", "nextCursor", "cursor", "next")

@@ -7,7 +7,9 @@ import (
 	"strings"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/reflection"
+	"google.golang.org/grpc/status"
 
 	"wallet-saas-v2/services/sign-service/internal/config"
 	"wallet-saas-v2/services/sign-service/internal/custody"
@@ -90,11 +92,19 @@ func (s *GRPCServer) SignMessage(ctx context.Context, req *pb.SignMessageRequest
 	if err != nil {
 		return nil, err
 	}
+	msgHash := strings.TrimSpace(req.GetMessageHash())
+	if msgHash == "" {
+		return nil, status.Error(codes.InvalidArgument, "message_hash is required")
+	}
+	msgHash = strings.TrimPrefix(msgHash, "0x")
+	if len(msgHash) != 64 {
+		return nil, status.Errorf(codes.InvalidArgument, "message_hash must be 32 bytes hex (got %d hex chars)", len(msgHash))
+	}
 	ref, err := hd.ParseKeyID(req.GetKeyId())
 	if err != nil {
 		return nil, err
 	}
-	signature, err := s.custody.SignMessage(decision.TenantID, ref, req.GetMessageHash())
+	signature, err := s.custody.SignMessage(decision.TenantID, ref, msgHash)
 	if err != nil {
 		return nil, err
 	}

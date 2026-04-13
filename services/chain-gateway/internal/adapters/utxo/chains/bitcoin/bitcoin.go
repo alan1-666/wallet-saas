@@ -604,10 +604,12 @@ func (c *ChainAdaptor) BuildSignedTransaction(req *utxo.SignedTransactionRequest
 				Msg:  err2.Error(),
 			}, err2
 		}
-		var r *btcec.ModNScalar
-		R := r.SetInt(r.SetBytes((*[32]byte)(req.Signatures[i][0:32])))
-		var s *btcec.ModNScalar
-		S := s.SetInt(r.SetBytes((*[32]byte)(req.Signatures[i][32:64])))
+		var rScalar btcec.ModNScalar
+		rScalar.SetByteSlice(req.Signatures[i][0:32])
+		var sScalar btcec.ModNScalar
+		sScalar.SetByteSlice(req.Signatures[i][32:64])
+		R := &rScalar
+		S := &sScalar
 		btcecSig := ecdsa.NewSignature(R, S)
 		sig := append(btcecSig.Serialize(), byte(txscript.SigHashAll))
 		sigScript, err2 := txscript.NewScriptBuilder().AddData(sig).AddData(pkData).Script()

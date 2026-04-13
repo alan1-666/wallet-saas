@@ -61,6 +61,7 @@ func (h *LocalHSM) SignMessage(tenantID string, ref hd.KeyRef, messageHash strin
 	if err != nil {
 		return "", err
 	}
+	defer zeroString(&signingKey.PrivateKeyHex)
 	switch ref.SignType {
 	case "ecdsa":
 		return crypto2.SignECDSAMessage(signingKey.PrivateKeyHex, messageHash)
@@ -69,6 +70,17 @@ func (h *LocalHSM) SignMessage(tenantID string, ref hd.KeyRef, messageHash strin
 	default:
 		return "", fmt.Errorf("unsupported sign type: %s", ref.SignType)
 	}
+}
+
+func zeroString(s *string) {
+	if s == nil {
+		return
+	}
+	b := []byte(*s)
+	for i := range b {
+		b[i] = 0
+	}
+	*s = ""
 }
 
 func (h *LocalHSM) slotID(tenantID, signType string) string {

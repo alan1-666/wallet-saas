@@ -64,14 +64,15 @@ type BuildUnsignedResponse struct {
 }
 
 type ListIncomingTransfersRequest struct {
-	Model    string `json:"model"`
-	Chain    string `json:"chain"`
-	Coin     string `json:"coin"`
-	Network  string `json:"network"`
-	Address  string `json:"address"`
-	Page     uint32 `json:"page"`
-	PageSize uint32 `json:"page_size"`
-	Cursor   string `json:"cursor"`
+	Model           string `json:"model"`
+	Chain           string `json:"chain"`
+	Coin            string `json:"coin"`
+	Network         string `json:"network"`
+	Address         string `json:"address"`
+	ContractAddress string `json:"contract_address"`
+	Page            uint32 `json:"page"`
+	PageSize        uint32 `json:"page_size"`
+	Cursor          string `json:"cursor"`
 }
 
 type TxFinalityRequest struct {

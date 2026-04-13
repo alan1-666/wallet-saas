@@ -115,13 +115,14 @@ func (s *ChainService) fetchIncomingRaw(ctx context.Context, binding ports.Plugi
 		}
 		rawMsg, err := withRetry(ctx, "get-tx-by-address", func() (json.RawMessage, error) {
 			return binding.Adapter.GetTxByAddress(ctx, ports.TxQueryInput{
-				Chain:    binding.Chain,
-				Coin:     in.Coin,
-				Network:  in.Network,
-				Address:  in.Address,
-				Page:     page,
-				PageSize: pageSize,
-				Cursor:   in.Cursor,
+				Chain:           binding.Chain,
+				Coin:            in.Coin,
+				Network:         in.Network,
+				Address:         in.Address,
+				ContractAddress: in.ContractAddress,
+				Page:            page,
+				PageSize:        pageSize,
+				Cursor:          in.Cursor,
 			})
 		})
 		if err != nil {

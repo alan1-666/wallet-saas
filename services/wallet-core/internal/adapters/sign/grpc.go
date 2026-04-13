@@ -2,10 +2,13 @@ package sign
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"os"
 	"strings"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
@@ -20,7 +23,13 @@ type GRPCSign struct {
 }
 
 func NewGRPC(addr, authToken string) (*GRPCSign, error) {
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	var creds grpc.DialOption
+	if os.Getenv("GRPC_TLS_ENABLED") == "true" {
+		creds = grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12}))
+	} else {
+		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
+	}
+	conn, err := grpc.NewClient(addr, creds)
 	if err != nil {
 		return nil, err
 	}

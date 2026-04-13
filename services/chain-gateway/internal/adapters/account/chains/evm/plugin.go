@@ -183,13 +183,21 @@ func (p *Plugin) GetTxByAddress(ctx context.Context, in ports.TxQueryInput) (jso
 	if p.Reader == nil {
 		return nil, fmt.Errorf("evm reader is nil")
 	}
-	out, err := p.Reader.ListIncomingTransfers(ctx, in.Chain, in.Network, in.Address, in.Cursor, in.PageSize)
+
+	var out ports.IncomingTransferResult
+	var err error
+	if ca := strings.TrimSpace(in.ContractAddress); ca != "" {
+		out, err = p.Reader.ListIncomingERC20Transfers(ctx, in.Chain, in.Network, ca, in.Address, in.Cursor, in.PageSize)
+	} else {
+		out, err = p.Reader.ListIncomingTransfers(ctx, in.Chain, in.Network, in.Address, in.Cursor, in.PageSize)
+	}
 	if err != nil {
 		return nil, err
 	}
+
 	items := make([]map[string]any, 0, len(out.Items))
 	for idx, item := range out.Items {
-		items = append(items, map[string]any{
+		entry := map[string]any{
 			"hash":          item.TxHash,
 			"index":         fallbackIndex(item.Index, idx),
 			"froms":         []map[string]any{{"address": item.FromAddress}},
@@ -197,11 +205,26 @@ func (p *Plugin) GetTxByAddress(ctx context.Context, in ports.TxQueryInput) (jso
 			"values":        []map[string]any{{"value": item.Amount}},
 			"confirmations": item.Confirmations,
 			"status":        item.Status,
-		})
+		}
+		if item.ContractAddress != "" {
+			entry["contract_address"] = item.ContractAddress
+		}
+		items = append(items, entry)
 	}
 	payload := map[string]any{
 		"tx":          items,
 		"next_cursor": out.NextCursor,
+	}
+	if len(out.Blocks) > 0 {
+		blockMetas := make([]map[string]any, 0, len(out.Blocks))
+		for _, b := range out.Blocks {
+			blockMetas = append(blockMetas, map[string]any{
+				"number":      b.Number,
+				"hash":        b.Hash,
+				"parent_hash": b.ParentHash,
+			})
+		}
+		payload["blocks"] = blockMetas
 	}
 	return json.Marshal(payload)
 }

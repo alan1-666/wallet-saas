@@ -1,6 +1,6 @@
 services:
   api-gateway:
-    image: golang:1.26
+    image: golang:1.24
     working_dir: /app/services/api-gateway
     command: sh -lc "export PATH=/usr/local/go/bin:$PATH && go run ./cmd"
     environment:
@@ -20,7 +20,7 @@ services:
       - postgres
 
   wallet-core:
-    image: golang:1.26
+    image: golang:1.24
     working_dir: /app/services/wallet-core
     command: sh -lc "export PATH=/usr/local/go/bin:$PATH && go run ./cmd"
     environment:
@@ -42,7 +42,7 @@ services:
       - postgres
 
   chain-gateway:
-    image: golang:1.26
+    image: golang:1.24
     working_dir: /app/services/chain-gateway
     command: sh -lc "export PATH=/usr/local/go/bin:$PATH && go run ./cmd"
     environment:
@@ -67,7 +67,7 @@ services:
       - "19082:9082"
 
   sign-service:
-    image: golang:1.26
+    image: golang:1.24
     working_dir: /app/services/sign-service
     command: sh -lc "export PATH=/usr/local/go/bin:$PATH && go run ./cmd"
     environment:
@@ -90,7 +90,7 @@ services:
       - "19091:9091"
 
   scan-account-service:
-    image: golang:1.26
+    image: golang:1.24
     working_dir: /app/services/scan-account-service
     command: sh -lc "export PATH=/usr/local/go/bin:$PATH && go run ./cmd"
     environment:
@@ -122,7 +122,7 @@ services:
       - chain-gateway
 
   scan-utxo-service:
-    image: golang:1.26
+    image: golang:1.24
     working_dir: /app/services/scan-utxo-service
     command: sh -lc "export PATH=/usr/local/go/bin:$PATH && go run ./cmd"
     environment:

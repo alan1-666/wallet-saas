@@ -73,6 +73,7 @@ message ListIncomingTransfersRequest {
   uint32 page = 6;
   uint32 page_size = 7;
   string cursor = 8;
+  string contract_address = 9;
 }
 
 message IncomingTransfer {
@@ -83,11 +84,19 @@ message IncomingTransfer {
   int64 confirmations = 5;
   int64 index = 6;
   string status = 7;
+  string contract_address = 8;
+}
+
+message BlockMeta {
+  int64 number = 1;
+  string hash = 2;
+  string parent_hash = 3;
 }
 
 message ListIncomingTransfersResponse {
   repeated IncomingTransfer items = 1;
   string next_cursor = 2;
+  repeated BlockMeta blocks = 3;
 }
 
 message TxFinalityRequest {

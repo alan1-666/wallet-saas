@@ -15,14 +15,15 @@ func (h *ChainHandler) ListIncomingTransfers(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	out, err := h.Chain.ListIncomingTransfers(r.Context(), ports.IncomingTransferInput{
-		Model:    ports.ChainModel(req.Model),
-		Chain:    req.Chain,
-		Coin:     req.Coin,
-		Network:  req.Network,
-		Address:  req.Address,
-		Cursor:   req.Cursor,
-		Page:     req.Page,
-		PageSize: req.PageSize,
+		Model:           ports.ChainModel(req.Model),
+		Chain:           req.Chain,
+		Coin:            req.Coin,
+		Network:         req.Network,
+		Address:         req.Address,
+		ContractAddress: req.ContractAddress,
+		Cursor:          req.Cursor,
+		Page:            req.Page,
+		PageSize:        req.PageSize,
 	})
 	if err != nil {
 		writeGatewayError(w, err)

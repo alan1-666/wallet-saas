@@ -86,5 +86,13 @@ func Run() error {
 		AccelerateMaxAttempts: cfg.WithdrawAccelerateMaxAttempts,
 		AccelerateGasBumpBps:  cfg.WithdrawAccelerateGasBumpBps,
 	}).Run(context.Background())
-	return http.ListenAndServe(cfg.HTTPAddr, httptransport.NewMux(withdrawHandler))
+	srv := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           httptransport.NewMux(withdrawHandler),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	return srv.ListenAndServe()
 }

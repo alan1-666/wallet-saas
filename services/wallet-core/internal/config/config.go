@@ -41,9 +41,6 @@ func Load() Config {
 	}
 
 	signToken := os.Getenv("SIGN_SERVICE_TOKEN")
-	if signToken == "" {
-		signToken = "dev-sign-token"
-	}
 
 	chainGatewayGRPC := os.Getenv("CHAIN_GATEWAY_GRPC_ADDR")
 	if chainGatewayGRPC == "" {

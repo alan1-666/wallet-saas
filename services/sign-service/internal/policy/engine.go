@@ -87,7 +87,7 @@ func (e *Engine) Authorize(ctx context.Context, operation, signType, keyID strin
 
 	token := tokenFromContext(ctx)
 	decision.TokenLabel = maskToken(token)
-	if e.authToken != "" && token != e.authToken {
+	if token == "" || token != e.authToken {
 		err = status.Error(codes.PermissionDenied, "sign service auth failed")
 		return decision, err
 	}
@@ -138,6 +138,14 @@ func (e *Engine) allow(token, tenantID, operation string) error {
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	if len(e.buckets) > 10000 {
+		for k, b := range e.buckets {
+			if now.Sub(b.start) >= e.rateLimitWindow {
+				delete(e.buckets, k)
+			}
+		}
+	}
 
 	b := e.buckets[key]
 	if b == nil || now.Sub(b.start) >= e.rateLimitWindow {

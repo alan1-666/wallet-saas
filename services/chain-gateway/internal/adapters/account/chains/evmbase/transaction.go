@@ -97,9 +97,9 @@ func CreateEip1559SignedTx(txData *types.DynamicFeeTx, signature []byte, chainId
 	if err != nil {
 		return nil, nil, "", "", errors.New("tx with signature fail")
 	}
-	signedTxData, err := rlp.EncodeToBytes(signedTx)
+	rawTxBytes, err := signedTx.MarshalBinary()
 	if err != nil {
 		return nil, nil, "", "", errors.New("encode tx to byte fail")
 	}
-	return signer, signedTx, "0x" + hex.EncodeToString(signedTxData)[4:], signedTx.Hash().String(), nil
+	return signer, signedTx, "0x" + hex.EncodeToString(rawTxBytes), signedTx.Hash().String(), nil
 }

@@ -41,6 +41,12 @@ func chainUsesEdDSA(chain string) bool {
 }
 
 func (o *WithdrawOrchestrator) buildSignatures(ctx context.Context, tenantID, signType, chain string, signers []ports.SignerRef, signHashes []string) ([]string, []string, error) {
+	if len(signers) == 0 {
+		return nil, nil, fmt.Errorf("no signers provided")
+	}
+	if len(signHashes) > len(signers) && len(signers) > 1 {
+		return nil, nil, fmt.Errorf("signHashes count (%d) exceeds signers count (%d) with ambiguous mapping", len(signHashes), len(signers))
+	}
 	signatures := make([]string, 0, len(signHashes))
 	publicKeys := make([]string, 0, len(signHashes))
 	for i, signHash := range signHashes {

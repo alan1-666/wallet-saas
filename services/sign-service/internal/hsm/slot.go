@@ -1,37 +1,45 @@
 package hsm
 
-import "strings"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"strings"
+)
 
 func BuildTenantSlotID(slotPrefix, tenantID, signType string) string {
 	slotPrefix = strings.TrimSpace(slotPrefix)
 	if slotPrefix == "" {
 		slotPrefix = "master"
 	}
-	tenantID = sanitizeSlotPart(tenantID)
+	tenantID = strings.TrimSpace(tenantID)
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	return slotPrefix + ":" + tenantID + ":" + strings.TrimSpace(signType)
+	safeTenant := tenantSlotKey(tenantID)
+	return slotPrefix + ":" + safeTenant + ":" + strings.TrimSpace(signType)
 }
 
-func sanitizeSlotPart(v string) string {
-	v = strings.ToLower(strings.TrimSpace(v))
-	if v == "" {
-		return ""
+func tenantSlotKey(tenantID string) string {
+	if isSafeSlotID(tenantID) {
+		return tenantID
 	}
-	var b strings.Builder
-	b.Grow(len(v))
+	h := sha256.Sum256([]byte(tenantID))
+	return fmt.Sprintf("t_%s", hex.EncodeToString(h[:16]))
+}
+
+func isSafeSlotID(v string) bool {
+	if v == "" {
+		return false
+	}
 	for _, r := range v {
 		switch {
 		case r >= 'a' && r <= 'z':
-			b.WriteRune(r)
 		case r >= '0' && r <= '9':
-			b.WriteRune(r)
 		case r == '-', r == '_', r == '.':
-			b.WriteRune(r)
 		default:
-			b.WriteByte('-')
+			return false
 		}
 	}
-	return strings.Trim(b.String(), "-")
+	return true
 }

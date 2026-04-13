@@ -2,9 +2,11 @@ package chain
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -12,6 +14,7 @@ import (
 	"wallet-saas-v2/services/wallet-core/internal/ports"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -21,7 +24,13 @@ type GRPCChain struct {
 }
 
 func NewGRPC(addr string) (*GRPCChain, error) {
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	var creds grpc.DialOption
+	if os.Getenv("GRPC_TLS_ENABLED") == "true" {
+		creds = grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12}))
+	} else {
+		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
+	}
+	conn, err := grpc.NewClient(addr, creds)
 	if err != nil {
 		return nil, err
 	}
@@ -118,20 +127,24 @@ func buildBase64Tx(params ports.BuildUnsignedParams) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		maxPriorityFee := envOrDefault("EVM_MAX_PRIORITY_FEE_WEI", "1000000000")
+		maxFee := envOrDefault("EVM_MAX_FEE_WEI", "20000000000")
+		gasLimit := envOrDefaultInt("EVM_GAS_LIMIT", 21000)
+		erc20GasLimit := envOrDefaultInt("EVM_ERC20_GAS_LIMIT", 100000)
 		payload := evmDynamicFeePayload{
 			ChainID:              chainID,
 			NonceMode:            "pending",
 			FromAddress:          strings.TrimSpace(params.From),
 			Nonce:                0,
-			MaxPriorityFeePerGas: "1000000000",  // 1 gwei
-			MaxFeePerGas:         "20000000000", // 20 gwei
-			GasLimit:             21000,
+			MaxPriorityFeePerGas: maxPriorityFee,
+			MaxFeePerGas:         maxFee,
+			GasLimit:             uint64(gasLimit),
 			ToAddress:            strings.TrimSpace(params.To),
 			Amount:               strings.TrimSpace(params.Amount),
 			ContractAddress:      strings.TrimSpace(params.ContractAddress),
 		}
 		if payload.ContractAddress != "" {
-			payload.GasLimit = 100000
+			payload.GasLimit = uint64(erc20GasLimit)
 		}
 		raw, err := json.Marshal(payload)
 		if err != nil {
@@ -333,4 +346,20 @@ func (g *GRPCChain) ConvertAddress(ctx context.Context, chain, network, addrType
 		return "", fmt.Errorf("empty address")
 	}
 	return resp.GetAddress(), nil
+}
+
+func envOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func envOrDefaultInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return fallback
 }

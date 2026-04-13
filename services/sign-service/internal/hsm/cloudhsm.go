@@ -1,7 +1,6 @@
 package hsm
 
 import (
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"strings"
@@ -77,14 +76,7 @@ func (b *CloudHSMBackend) LoadOrCreateSeed(slotID string) ([]byte, error) {
 		return nil, err
 	}
 
-	seed = make([]byte, 64)
-	if _, err := rand.Read(seed); err != nil {
-		return nil, err
-	}
-	if err := session.StoreSeed(slotID, seed); err != nil {
-		return nil, err
-	}
-	return append([]byte(nil), seed...), nil
+	return nil, fmt.Errorf("seed slot %q is not provisioned; provision it via the admin bootstrap path", slotID)
 }
 
 func (b *CloudHSMBackend) openSession() (PKCS11Session, error) {

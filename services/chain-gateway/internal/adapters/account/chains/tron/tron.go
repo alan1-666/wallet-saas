@@ -176,25 +176,26 @@ func (c *ChainAdaptor) GetSupportChains(req *account.SupportChainsRequest) (*acc
 
 // ConvertAddress Convert public key to address
 func (c *ChainAdaptor) ConvertAddress(req *account.ConvertAddressRequest) (*account.ConvertAddressResponse, error) {
-	// Decoding hexadecimal strings into byte arrays
 	pubKeyBytes, err := hex.DecodeString(req.PublicKey)
-	// Parse byte array into public key
-	pubKey, _ := btcec.ParsePubKey(pubKeyBytes)
-	// Convert public key to address
-	addr := address.PubkeyToAddress(*pubKey.ToECDSA())
-
 	if err != nil {
 		return &account.ConvertAddressResponse{
 			Code: common2.ReturnCode_ERROR,
-			Msg:  err.Error(),
-		}, nil
-	} else {
-		return &account.ConvertAddressResponse{
-			Code:    common2.ReturnCode_SUCCESS,
-			Msg:     "convert address successs",
-			Address: addr.String(),
+			Msg:  "invalid hex public key: " + err.Error(),
 		}, nil
 	}
+	pubKey, err := btcec.ParsePubKey(pubKeyBytes)
+	if err != nil {
+		return &account.ConvertAddressResponse{
+			Code: common2.ReturnCode_ERROR,
+			Msg:  "invalid public key: " + err.Error(),
+		}, nil
+	}
+	addr := address.PubkeyToAddress(*pubKey.ToECDSA())
+	return &account.ConvertAddressResponse{
+		Code:    common2.ReturnCode_SUCCESS,
+		Msg:     "convert address success",
+		Address: addr.String(),
+	}, nil
 }
 
 // ValidAddress verify address

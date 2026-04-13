@@ -24,5 +24,14 @@ func Run() error {
 		log.Printf("warning: API_GATEWAY_DB_DSN/WALLET_DB_DSN is empty, requests will be rejected")
 	}
 	proxy := httptransport.NewProxyHandler(cfg.WalletCoreAddr, time.Duration(cfg.UpstreamTimeoutMS)*time.Millisecond, sec)
-	return http.ListenAndServe(cfg.Addr, httptransport.NewMux(proxy))
+	srv := &http.Server{
+		Addr:              cfg.Addr,
+		Handler:           httptransport.NewMux(proxy),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+	return srv.ListenAndServe()
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"time"
 
 	_ "github.com/lib/pq"
 )
@@ -19,6 +20,10 @@ func NewPostgres(dsn string) (*Postgres, error) {
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(20)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetConnMaxIdleTime(2 * time.Minute)
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -149,21 +154,14 @@ VALUES ($1,$2,$3,$4)
 }
 
 func (p *Postgres) Reserve(ctx context.Context, tenantID, requestID, operation, requestHash string) (IdemResult, error) {
-	_, err := p.db.ExecContext(ctx, `
+	var hash, status, response string
+	err := p.db.QueryRowContext(ctx, `
 INSERT INTO idem_requests (tenant_id, request_id, operation, request_hash, status)
 VALUES ($1,$2,$3,$4,'PENDING')
-ON CONFLICT (tenant_id, request_id, operation) DO NOTHING
-`, tenantID, requestID, operation, requestHash)
-	if err != nil {
-		return IdemResult{}, err
-	}
-
-	var hash, status, response string
-	err = p.db.QueryRowContext(ctx, `
-SELECT request_hash, status, response
-FROM idem_requests
-WHERE tenant_id=$1 AND request_id=$2 AND operation=$3
-`, tenantID, requestID, operation).Scan(&hash, &status, &response)
+ON CONFLICT (tenant_id, request_id, operation)
+DO UPDATE SET updated_at = NOW()
+RETURNING request_hash, status, response
+`, tenantID, requestID, operation, requestHash).Scan(&hash, &status, &response)
 	if err != nil {
 		return IdemResult{}, err
 	}
@@ -228,6 +226,7 @@ request_id TEXT NOT NULL,
 detail TEXT NOT NULL,
 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_created ON audit_logs (tenant_id, created_at);`,
 		`CREATE TABLE IF NOT EXISTS idem_requests (
 id BIGSERIAL PRIMARY KEY,
 tenant_id TEXT NOT NULL,
@@ -260,22 +259,6 @@ UNIQUE (tenant_id, chain, network)
 		if _, err := p.db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("security schema init failed: %w", err)
 		}
-	}
-	if _, err := p.db.ExecContext(ctx, `
-INSERT INTO api_tokens (token, tenant_id, can_withdraw, can_deposit, can_sweep, status)
-VALUES ('token_t1_full','t1',TRUE,TRUE,TRUE,'ACTIVE')
-ON CONFLICT (token) DO NOTHING
-`); err != nil {
-		return fmt.Errorf("seed api token failed: %w", err)
-	}
-	if _, err := p.db.ExecContext(ctx, `
-INSERT INTO tenant_chain_policies (tenant_id, chain, network, allow_deposit, allow_withdraw, allow_sweep, max_withdraw_amount, priority, status) VALUES
-('t1','ethereum','sepolia',TRUE,TRUE,TRUE,'100000000000000000000',100,'ACTIVE'),
-('t1','ethereum','mainnet',FALSE,FALSE,FALSE,'0',100,'ACTIVE'),
-('*','*','*',TRUE,FALSE,FALSE,'0',0,'ACTIVE')
-ON CONFLICT (tenant_id, chain, network) DO NOTHING
-`); err != nil {
-		return fmt.Errorf("seed tenant chain policy failed: %w", err)
 	}
 	return nil
 }

@@ -50,9 +50,6 @@ func Load() Config {
 	}
 
 	authToken := strings.TrimSpace(os.Getenv("SIGN_AUTH_TOKEN"))
-	if authToken == "" {
-		authToken = "dev-sign-token"
-	}
 
 	rateLimitWindow := 60 * time.Second
 	if raw := strings.TrimSpace(os.Getenv("SIGN_RATE_LIMIT_WINDOW_SECONDS")); raw != "" {
@@ -130,6 +127,13 @@ func Load() Config {
 }
 
 func (c Config) Validate() error {
+	if strings.TrimSpace(c.AuthToken) == "" {
+		return fmt.Errorf("SIGN_AUTH_TOKEN is required (must be set explicitly)")
+	}
+	if c.AuthToken == "dev-sign-token" {
+		return fmt.Errorf("SIGN_AUTH_TOKEN must not be the default dev token in production")
+	}
+
 	switch strings.TrimSpace(c.CustodyProvider) {
 	case "", "local-hsm":
 	default:

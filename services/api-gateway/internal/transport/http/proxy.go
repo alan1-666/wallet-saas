@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -123,6 +124,7 @@ func (h *ProxyHandler) ProxyTreasuryTransferStatus(w http.ResponseWriter, r *htt
 	h.proxy(w, r, "/v1/treasury/transfer/status", routeSpec{
 		Method:        http.MethodGet,
 		Action:        "treasury_transfer_status",
+		Permission:    "read",
 		RequireTenant: true,
 	})
 }
@@ -131,6 +133,7 @@ func (h *ProxyHandler) ProxyTreasuryWaterline(w http.ResponseWriter, r *http.Req
 	h.proxy(w, r, "/v1/treasury/waterline", routeSpec{
 		Method:        http.MethodGet,
 		Action:        "treasury_waterline",
+		Permission:    "read",
 		RequireTenant: true,
 	})
 }
@@ -139,6 +142,7 @@ func (h *ProxyHandler) ProxyWithdrawStatus(w http.ResponseWriter, r *http.Reques
 	h.proxy(w, r, "/v1/withdraw/status", routeSpec{
 		Method:        http.MethodGet,
 		Action:        "withdraw_status",
+		Permission:    "read",
 		RequireTenant: true,
 	})
 }
@@ -147,6 +151,7 @@ func (h *ProxyHandler) ProxyBalance(w http.ResponseWriter, r *http.Request) {
 	h.proxy(w, r, "/v1/balance", routeSpec{
 		Method:        http.MethodGet,
 		Action:        "balance",
+		Permission:    "read",
 		RequireTenant: true,
 	})
 }
@@ -174,6 +179,7 @@ func (h *ProxyHandler) ProxyAccountGet(w http.ResponseWriter, r *http.Request) {
 	h.proxy(w, r, "/v1/account/get", routeSpec{
 		Method:        http.MethodGet,
 		Action:        "account_get",
+		Permission:    "read",
 		RequireTenant: true,
 	})
 }
@@ -182,6 +188,7 @@ func (h *ProxyHandler) ProxyAccountList(w http.ResponseWriter, r *http.Request) 
 	h.proxy(w, r, "/v1/account/list", routeSpec{
 		Method:        http.MethodGet,
 		Action:        "account_list",
+		Permission:    "read",
 		RequireTenant: true,
 	})
 }
@@ -190,6 +197,7 @@ func (h *ProxyHandler) ProxyAccountAddresses(w http.ResponseWriter, r *http.Requ
 	h.proxy(w, r, "/v1/account/addresses", routeSpec{
 		Method:        http.MethodGet,
 		Action:        "account_addresses",
+		Permission:    "read",
 		RequireTenant: true,
 	})
 }
@@ -198,6 +206,7 @@ func (h *ProxyHandler) ProxyAccountAssets(w http.ResponseWriter, r *http.Request
 	h.proxy(w, r, "/v1/account/assets", routeSpec{
 		Method:        http.MethodGet,
 		Action:        "account_assets",
+		Permission:    "read",
 		RequireTenant: true,
 	})
 }
@@ -219,44 +228,45 @@ func (h *ProxyHandler) proxy(w http.ResponseWriter, r *http.Request, upstreamPat
 	if spec.Method == http.MethodPost {
 		body, err = readBody(r)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
 	}
 
-	tenantID, err := tenantFromRequest(r, body)
-	if err != nil {
+	parsed, parseErr := parseRequestContext(r, body)
+	if parseErr != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	if spec.RequireTenant && strings.TrimSpace(tenantID) == "" {
+	if spec.RequireTenant && strings.TrimSpace(parsed.TenantID) == "" {
 		http.Error(w, "tenant_id is required", http.StatusBadRequest)
 		return
 	}
 
-	_, statusCode, authMsg := h.authorize(r, tenantID, spec.Permission)
+	_, statusCode, authMsg := h.authorize(r, parsed.TenantID, spec.Permission)
 	if statusCode != 0 {
+		log.Printf("[proxy] REJECT authorize path=%s reqID=%s tenant=%s perm=%s status=%d msg=%s",
+			upstreamPath, requestID, parsed.TenantID, spec.Permission, statusCode, authMsg)
 		http.Error(w, authMsg, statusCode)
 		return
 	}
 	if spec.CheckSignPermission {
-		if err := h.checkSignPermission(r, tenantID, body); err != nil {
-			http.Error(w, err.Error(), http.StatusForbidden)
+		if err := h.checkSignPermission(r, parsed.TenantID, body); err != nil {
+			http.Error(w, "permission denied", http.StatusForbidden)
 			return
 		}
 	}
-	chain, network, amount, err := requestChainContext(r, body)
-	if err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
-		return
-	}
+	chain, network, amount := parsed.Chain, parsed.Network, parsed.Amount
+	tenantID := parsed.TenantID
 	if spec.RequireChainNetwork && (strings.TrimSpace(chain) == "" || strings.TrimSpace(network) == "") {
 		http.Error(w, "chain and network are required", http.StatusBadRequest)
 		return
 	}
 	if strings.TrimSpace(chain) != "" && strings.TrimSpace(network) != "" {
 		if err := h.Security.CheckTenantChainPolicy(r.Context(), tenantID, chain, network, spec.Permission, amount); err != nil {
-			http.Error(w, err.Error(), http.StatusForbidden)
+			log.Printf("[proxy] REJECT chain-policy path=%s reqID=%s tenant=%s chain=%s network=%s perm=%s err=%v",
+				upstreamPath, requestID, tenantID, chain, network, spec.Permission, err)
+			http.Error(w, "chain policy denied", http.StatusForbidden)
 			return
 		}
 	}
@@ -279,7 +289,7 @@ func (h *ProxyHandler) proxy(w http.ResponseWriter, r *http.Request, upstreamPat
 			http.Error(w, "idempotency conflict", http.StatusConflict)
 			return
 		case "REJECTED":
-			http.Error(w, "previous request failed: "+idem.Response, http.StatusConflict)
+			http.Error(w, "previous request failed", http.StatusConflict)
 			return
 		}
 	}
@@ -292,13 +302,19 @@ func (h *ProxyHandler) proxy(w http.ResponseWriter, r *http.Request, upstreamPat
 
 	if spec.IdempotencyOp != "" && idemState == "NEW" {
 		if respStatus >= 200 && respStatus < 300 {
-			_ = h.Security.Commit(r.Context(), tenantID, requestID, spec.IdempotencyOp, string(respBody))
+			if commitErr := h.Security.Commit(r.Context(), tenantID, requestID, spec.IdempotencyOp, string(respBody)); commitErr != nil {
+				log.Printf("[proxy] idempotency commit failed reqID=%s err=%v", requestID, commitErr)
+			}
 		} else if respStatus >= 400 && respStatus < 500 {
-			_ = h.Security.Reject(r.Context(), tenantID, requestID, spec.IdempotencyOp, fmt.Sprintf("upstream status=%d body=%s", respStatus, string(respBody)))
+			if rejectErr := h.Security.Reject(r.Context(), tenantID, requestID, spec.IdempotencyOp, fmt.Sprintf("upstream status=%d", respStatus)); rejectErr != nil {
+				log.Printf("[proxy] idempotency reject failed reqID=%s err=%v", requestID, rejectErr)
+			}
 		}
 	}
 	if strings.TrimSpace(tenantID) != "" {
-		_ = h.Security.Audit(r.Context(), tenantID, spec.Action, requestID, fmt.Sprintf("path=%s status=%d", upstreamPath, respStatus))
+		if auditErr := h.Security.Audit(r.Context(), tenantID, spec.Action, requestID, fmt.Sprintf("path=%s status=%d", upstreamPath, respStatus)); auditErr != nil {
+			log.Printf("[proxy] audit failed reqID=%s err=%v", requestID, auditErr)
+		}
 	}
 
 	if contentType != "" {
@@ -365,6 +381,10 @@ func (h *ProxyHandler) authorize(r *http.Request, tenantID, permission string) (
 		if !scope.CanSweep {
 			return security.Scope{}, http.StatusForbidden, "sweep not allowed"
 		}
+	case "read":
+		// any valid token can read
+	case "":
+		return security.Scope{}, http.StatusForbidden, "permission not specified"
 	}
 	return scope, 0, ""
 }
@@ -419,44 +439,41 @@ func readBody(r *http.Request) ([]byte, error) {
 	return body, nil
 }
 
-func tenantFromRequest(r *http.Request, body []byte) (string, error) {
+type requestContext struct {
+	TenantID string
+	Chain    string
+	Network  string
+	Amount   string
+}
+
+func parseRequestContext(r *http.Request, body []byte) (requestContext, error) {
 	if r.Method == http.MethodGet {
-		return strings.TrimSpace(r.URL.Query().Get("tenant_id")), nil
+		q := r.URL.Query()
+		return requestContext{
+			TenantID: strings.TrimSpace(q.Get("tenant_id")),
+			Chain:    strings.ToLower(strings.TrimSpace(q.Get("chain"))),
+			Network:  strings.ToLower(strings.TrimSpace(q.Get("network"))),
+			Amount:   strings.TrimSpace(q.Get("amount")),
+		}, nil
 	}
 	if len(body) == 0 {
-		return "", nil
+		return requestContext{}, nil
 	}
 	var payload struct {
 		TenantID string `json:"tenant_id"`
+		Chain    string `json:"chain"`
+		Network  string `json:"network"`
+		Amount   string `json:"amount"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", err
+		return requestContext{}, err
 	}
-	return strings.TrimSpace(payload.TenantID), nil
-}
-
-func requestChainContext(r *http.Request, body []byte) (string, string, string, error) {
-	if r.Method == http.MethodGet {
-		return strings.ToLower(strings.TrimSpace(r.URL.Query().Get("chain"))),
-			strings.ToLower(strings.TrimSpace(r.URL.Query().Get("network"))),
-			strings.TrimSpace(r.URL.Query().Get("amount")),
-			nil
-	}
-	if len(body) == 0 {
-		return "", "", "", nil
-	}
-	var payload struct {
-		Chain   string `json:"chain"`
-		Network string `json:"network"`
-		Amount  string `json:"amount"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", "", "", err
-	}
-	return strings.ToLower(strings.TrimSpace(payload.Chain)),
-		strings.ToLower(strings.TrimSpace(payload.Network)),
-		strings.TrimSpace(payload.Amount),
-		nil
+	return requestContext{
+		TenantID: strings.TrimSpace(payload.TenantID),
+		Chain:    strings.ToLower(strings.TrimSpace(payload.Chain)),
+		Network:  strings.ToLower(strings.TrimSpace(payload.Network)),
+		Amount:   strings.TrimSpace(payload.Amount),
+	}, nil
 }
 
 func hashRequest(body []byte) string {
